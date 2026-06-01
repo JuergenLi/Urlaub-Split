@@ -1,0 +1,1747 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <title>Urlaubs-Abrechnung</title>
+  <script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+  <script crossorigin src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script crossorigin src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #0d0f1a; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; color: #c8cad8; -webkit-font-smoothing: antialiased; }
+    input, select, button, textarea { font-family: inherit; }
+    select option { background: #1a1d2e; color: #e0e2f0; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: #0e1020; }
+    ::-webkit-scrollbar-thumb { background: #2a2d42; border-radius: 2px; }
+    #loading { position:fixed; inset:0; background:#0d0f1a; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; z-index:9999; }
+    #loading .spinner { width:44px; height:44px; border-radius:50%; border:3px solid #252840; border-top-color:#7eb8f7; animation:spin 0.8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    #loading p { color:#555; font-size:13px; }
+    #error-screen { display:none; position:fixed; inset:0; background:#0d0f1a; align-items:center; justify-content:center; padding:24px; z-index:9999; }
+    #error-screen.show { display:flex; }
+    #error-box { background:#1a0a0a; border:1px solid #e85a5a44; border-radius:16px; padding:28px; max-width:480px; width:100%; }
+  </style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div><p>Verbinde mit Firebase…</p></div>
+<div id="error-screen"><div id="error-box">
+  <div style="font-size:32px;margin-bottom:12px">⚠️</div>
+  <div style="font-size:17px;font-weight:800;color:#e0e2f0;margin-bottom:8px">Fehler beim Laden</div>
+  <div id="error-msg" style="font-size:13px;color:#e85a5a;margin-bottom:16px;line-height:1.5;word-break:break-all"></div>
+  <div style="font-size:12px;color:#555;margin-bottom:16px">Mögliche Ursachen: Keine Internetverbindung · Firebase-Regeln nicht gesetzt</div>
+  <button onclick="location.reload()" style="background:linear-gradient(90deg,#4a7fd4,#5aabda);border:none;color:#fff;border-radius:10px;padding:10px 20px;cursor:pointer;font-size:14px;font-weight:700">🔄 Neu laden</button>
+</div></div>
+<div id="root"></div>
+
+<script>
+function showError(msg) {
+  document.getElementById('loading').style.display='none';
+  document.getElementById('error-screen').classList.add('show');
+  document.getElementById('error-msg').textContent = msg;
+}
+window.onerror = function(msg, src, line, col, err) {
+  showError((err ? err.message : msg) + (line ? ' (Zeile '+line+')' : ''));
+};
+window.addEventListener('unhandledrejection', function(e) {
+  showError('Promise-Fehler: '+(e.reason?.message||String(e.reason)));
+});
+try {
+  const firebaseConfig = {
+    apiKey: "AIzaSyCxJkxpObq0u7Dy0V-KwZtexOPWIOXZeJs",
+    authDomain: "reisekosten-abrechnung-dc729.firebaseapp.com",
+    databaseURL: "https://reisekosten-abrechnung-dc729-default-rtdb.europe-west1.firebasedatabase.app",
+    projectId: "reisekosten-abrechnung-dc729",
+    storageBucket: "reisekosten-abrechnung-dc729.firebasestorage.app",
+    messagingSenderId: "276472077207",
+    appId: "1:276472077207:web:0dd0fba78cc6066b70c2d2"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
+  function cleanForFirebase(obj) {
+    if (Array.isArray(obj)) return obj.map(cleanForFirebase);
+    if (obj !== null && typeof obj === 'object') {
+      const out = {};
+      for (const k of Object.keys(obj)) {
+        const v = obj[k];
+        if (v === undefined) continue;
+        out[k] = cleanForFirebase(v);
+      }
+      return out;
+    }
+    return obj;
+  }
+  window.fbSave = function(data) { return db.ref("state").set(cleanForFirebase(data)); };
+  window.fbSubscribe = function(cb) {
+    const ref = db.ref("state");
+    ref.on("value", snap => cb(snap.val()));
+    return () => ref.off("value");
+  };
+} catch(e) { showError('Firebase-Fehler: '+e.message); }
+</script>
+
+<script type="text/babel">
+const { useState, useMemo, useCallback, useEffect, useRef } = React;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATENMODELL
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// App-State:
+//   personen[]      globaler Personenpool (id, name, nachname, farbe)
+//   reisen[]        jede Reise hat eigene Gruppen + Ausgaben
+//     reise.id / name / startDatum / endDatum / währung
+//     reise.gruppen[]   { id, name, farbe, mitglieder: [personId] }
+//     reise.ausgaben[]  {
+//       id, beschreibung, betrag, datum, bezahlerTyp: "person"|"gruppe",
+//       bezahlerId, verteilungsModus: "alle"|"anwesende"|"gruppen"|"personen",
+//       verteilungsZiele: [id...],   // gruppen- oder personen-IDs
+//       extrakosten: [{ zielTyp:"gruppe"|"person", zielId, betrag }]
+//     }
+//     reise.anwesenheit  { personId: [datum...] }
+//     reise.einzahlungen [] { personId, betrag, notiz }
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── FARBEN ────────────────────────────────────────────────────────────────────
+const PALETTE = [
+  "#E8855A","#5A9BE8","#5AC8A0","#C878D4","#E8C05A",
+  "#5ABFE8","#E85A8A","#A0E870","#F0A040","#60D0E0",
+  "#D070C0","#70A8F0","#F07070","#70D0A0","#C0B060",
+];
+let colorIdx = 0;
+const nextColor = () => PALETTE[colorIdx++ % PALETTE.length];
+
+// ── SEED DATA (Texel) ─────────────────────────────────────────────────────────
+function makeSeedData() {
+  const pid = (n) => n.toLowerCase().replace(/ü/g,"ue").replace(/ä/g,"ae").replace(/ö/g,"oe");
+  const persons = [
+    { id: pid("Bettina"),  name: "Bettina",  nachname: "Lindstädt", farbe: "#E8855A" },
+    { id: pid("Jürgen"),   name: "Jürgen",   nachname: "Lindstädt", farbe: "#5A9BE8" },
+    { id: pid("Petra"),    name: "Petra",    nachname: "Lindstädt", farbe: "#5AC8A0" },
+    { id: pid("Dieter"),   name: "Dieter",   nachname: "Lindstädt", farbe: "#C878D4" },
+    { id: pid("Martin"),   name: "Martin",   nachname: "Müller",    farbe: "#E8C05A" },
+    { id: pid("Erik"),     name: "Erik",     nachname: "Lindstädt", farbe: "#5ABFE8" },
+    { id: pid("Paulina"),  name: "Paulina",  nachname: "Lindstädt", farbe: "#E85A8A" },
+  ];
+  const allDays = ["2026-05-26","2026-05-27","2026-05-28","2026-05-29","2026-05-30",
+                   "2026-05-31","2026-06-01","2026-06-02","2026-06-03","2026-06-04","2026-06-05"];
+  const gruppen = [
+    { id: "g_lindstaedt",  name: "Lindstädt",  farbe: "#7eb8f7", mitglieder: ["bettina","juergen","erik","paulina"] },
+    { id: "g_lindstaedt2", name: "Lindstädt 2", farbe: "#5AC8A0", mitglieder: ["petra","dieter"] },
+    { id: "g_mueller",     name: "Müller",      farbe: "#E8C05A", mitglieder: ["martin"] },
+  ];
+  const anwesenheit = {
+    bettina: [...allDays], juergen: [...allDays], petra: [...allDays], dieter: [...allDays],
+    martin:  ["2026-05-27","2026-05-28","2026-05-29","2026-05-30","2026-05-31","2026-06-01","2026-06-02"],
+    erik:    ["2026-05-28","2026-05-29","2026-05-30","2026-05-31"],
+    paulina: ["2026-05-28","2026-05-29","2026-05-30","2026-05-31"],
+  };
+  const einzahlungen = [
+    { id: "ez1", personId: "bettina", betrag: 3350.18, notiz: "Hauptzahlung" },
+    { id: "ez2", personId: "martin",  betrag: 91,      notiz: "" },
+    { id: "ez3", personId: "petra",   betrag: 115.49,  notiz: "" },
+  ];
+  const ausgaben = [
+    { id: 1,  beschreibung: "Miete Haus",              betrag: 2334.50, datum: "2024-04-21", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"alle",      verteilungsZiele:[], extrakosten:[] },
+    { id: 2,  beschreibung: "Paal 17 Ankommenssnak",   betrag: 185,     datum: "2026-05-26", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 3,  beschreibung: "Lebensmittel",             betrag: 92.99,   datum: "2026-05-24", bezahlerTyp:"person", bezahlerId:"petra",   verteilungsModus:"alle",      verteilungsZiele:[], extrakosten:[] },
+    { id: 4,  beschreibung: "Lebensmittel Jumbo",       betrag: 42.32,   datum: "2026-05-26", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 5,  beschreibung: "Brötchen",                 betrag: 26.95,   datum: "2026-05-27", bezahlerTyp:"person", bezahlerId:"petra",   verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 6,  beschreibung: "Briese 20",                betrag: 95,      datum: "2026-05-27", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 7,  beschreibung: "Lachsessen Jumbo",         betrag: 42.11,   datum: "2026-05-27", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 8,  beschreibung: "Kaffee de Horn",           betrag: 58,      datum: "2026-05-28", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 9,  beschreibung: "Paal 15",                  betrag: 127,     datum: "2026-05-28", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 10, beschreibung: "Jumbo-Einkauf",            betrag: 102,     datum: "2026-05-28", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 11, beschreibung: "Brötchen",                 betrag: 30,      datum: "2026-05-29", bezahlerTyp:"person", bezahlerId:"martin",  verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 12, beschreibung: "Brötchen",                 betrag: 27,      datum: "2026-05-27", bezahlerTyp:"person", bezahlerId:"martin",  verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 13, beschreibung: "Café Oostend",             betrag: 112,     datum: "2026-05-29", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 14, beschreibung: "Paal 17 Pommes",           betrag: 32.25,   datum: "2026-05-29", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 15, beschreibung: "Jumbo Einkauf",            betrag: 59.37,   datum: "2026-05-29", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 16, beschreibung: "Kleine Apfelsaftflaschen", betrag: 59,      datum: "2026-05-29", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 17, beschreibung: "Brötchen",                 betrag: 22.50,   datum: "2026-05-30", bezahlerTyp:"person", bezahlerId:"petra",   verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 18, beschreibung: "Nordkap",                  betrag: 130,     datum: "2026-05-30", bezahlerTyp:"person", bezahlerId:"martin",  verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 19, beschreibung: "Lebensmittel Vorab",       betrag: 70,      datum: "2026-05-20", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"alle",      verteilungsZiele:[], extrakosten:[] },
+    { id: 20, beschreibung: "Briese 20",                betrag: 36,      datum: "2026-05-30", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 21, beschreibung: "Vogelhuis",                betrag: 335,     datum: "2026-05-30", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 22, beschreibung: "Paal 9",                   betrag: 110,     datum: "2026-05-31", bezahlerTyp:"person", bezahlerId:"bettina", verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 23, beschreibung: "Jumbo",                    betrag: 14,      datum: "2026-05-31", bezahlerTyp:"person", bezahlerId:"martin",  verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+    { id: 24, beschreibung: "Brötchen",                 betrag: 20,      datum: "2026-06-01", bezahlerTyp:"person", bezahlerId:"martin",  verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[] },
+  ];
+  return {
+    personen: persons,
+    reisen: [{
+      id: "texel2026", name: "Texel 2026", emoji: "🏖",
+      startDatum: "2026-05-26", endDatum: "2026-06-05", waehrung: "EUR",
+      gruppen, anwesenheit, einzahlungen, ausgaben,
+    }],
+  };
+}
+
+// ── BERECHNUNGS-ENGINE ────────────────────────────────────────────────────────
+function berechne(reise, allPersonen) {
+  const { gruppen, ausgaben, anwesenheit, einzahlungen } = reise;
+  // Alle beteiligten Personen (Mitglieder irgendeiner Gruppe)
+  const mitgliederIds = [...new Set(gruppen.flatMap(g => g.mitglieder))];
+  const personen = allPersonen.filter(p => mitgliederIds.includes(p.id));
+
+  // personId → gruppenIds
+  const personGruppen = {};
+  personen.forEach(p => {
+    personGruppen[p.id] = gruppen.filter(g => g.mitglieder.includes(p.id)).map(g => g.id);
+  });
+
+  // Anteil je Person aus einer Ausgabe berechnen
+  const anteile = {};
+  personen.forEach(p => { anteile[p.id] = 0; });
+
+  ausgaben.forEach(a => {
+    const brutto = parseFloat(a.betrag) || 0;
+
+    // Extrakosten rausrechnen
+    const ekSumme = (a.extrakosten || []).reduce((s, e) => s + (parseFloat(e.betrag) || 0), 0);
+    const netto = Math.max(0, brutto - ekSumme);
+
+    // Zielgruppe bestimmen
+    let zielIds = [];
+    if (a.verteilungsModus === "alle") {
+      zielIds = mitgliederIds;
+    } else if (a.verteilungsModus === "anwesende") {
+      zielIds = mitgliederIds.filter(id => (anwesenheit[id] || []).includes(a.datum));
+      if (zielIds.length === 0) zielIds = mitgliederIds;
+    } else if (a.verteilungsModus === "gruppen") {
+      zielIds = [...new Set((a.verteilungsZiele || []).flatMap(gid => {
+        const g = gruppen.find(x => x.id === gid);
+        return g ? g.mitglieder : [];
+      }))];
+    } else if (a.verteilungsModus === "personen") {
+      zielIds = a.verteilungsZiele || [];
+    }
+    if (zielIds.length === 0) zielIds = mitgliederIds;
+
+    // Nettobetrag gleichmäßig auf Zielgruppe
+    const pro = netto / zielIds.length;
+    zielIds.forEach(id => { if (anteile[id] !== undefined) anteile[id] += pro; });
+
+    // Extrakosten je Ziel
+    (a.extrakosten || []).forEach(ek => {
+      const ekB = parseFloat(ek.betrag) || 0;
+      if (ek.zielTyp === "gruppe") {
+        const g = gruppen.find(x => x.id === ek.zielId);
+        if (g) {
+          const proPerson = ekB / g.mitglieder.length;
+          g.mitglieder.forEach(id => { if (anteile[id] !== undefined) anteile[id] += proPerson; });
+        }
+      } else if (ek.zielTyp === "person") {
+        if (anteile[ek.zielId] !== undefined) anteile[ek.zielId] += ekB;
+      }
+    });
+  });
+
+  // Eingezahlt je Person:
+  // 1. Manuelle Einzahlungen
+  // 2. + selbst bezahlte Ausgaben (wer eine Ausgabe bezahlt hat, hat diesen Betrag faktisch eingezahlt)
+  const eingezahltMap = {};
+  personen.forEach(p => { eingezahltMap[p.id] = 0; });
+
+  // Manuelle Einzahlungen
+  einzahlungen.forEach(e => {
+    if (eingezahltMap[e.personId] !== undefined)
+      eingezahltMap[e.personId] += parseFloat(e.betrag) || 0;
+  });
+
+  // Bezahlte Ausgaben automatisch anrechnen (nur Personen, keine Gruppen als Bezahler)
+  ausgaben.forEach(a => {
+    if (a.bezahlerTyp === "person" && eingezahltMap[a.bezahlerId] !== undefined)
+      eingezahltMap[a.bezahlerId] += parseFloat(a.betrag) || 0;
+  });
+
+  const bilanzen = personen.map(p => ({
+    ...p,
+    anteil:       anteile[p.id]      || 0,
+    eingezahlt:   eingezahltMap[p.id] || 0,
+    // Aufschlüsselung für UI
+    manuellEingezahlt: einzahlungen.filter(e=>e.personId===p.id).reduce((s,e)=>s+(parseFloat(e.betrag)||0),0),
+    bezahltAusgaben:   ausgaben.filter(a=>a.bezahlerTyp==="person"&&a.bezahlerId===p.id).reduce((s,a)=>s+(parseFloat(a.betrag)||0),0),
+    bilanz: (eingezahltMap[p.id] || 0) - (anteile[p.id] || 0),
+    gruppenIds: personGruppen[p.id] || [],
+  }));
+
+  // Ausgleich
+  const gl = bilanzen.filter(p => p.bilanz > 0.01).map(p => ({ id: p.id, name: p.name, rest: p.bilanz }));
+  const sc = bilanzen.filter(p => p.bilanz < -0.01).map(p => ({ id: p.id, name: p.name, rest: Math.abs(p.bilanz) }));
+  const transfers = [];
+  let gi = 0, si = 0;
+  while (gi < gl.length && si < sc.length) {
+    const b = Math.min(gl[gi].rest, sc[si].rest);
+    if (b > 0.01) transfers.push({ von: sc[si].id, vonName: sc[si].name, an: gl[gi].id, anName: gl[gi].name, betrag: b });
+    gl[gi].rest -= b; sc[si].rest -= b;
+    if (gl[gi].rest < 0.01) gi++;
+    if (sc[si].rest < 0.01) si++;
+  }
+
+  // Gruppen-Bilanz
+  const gruppenBilanz = gruppen.map(g => {
+    const mb = bilanzen.filter(p => g.mitglieder.includes(p.id));
+    return { ...g, gesamtAnteil: mb.reduce((s,p)=>s+p.anteil,0), gesamtEingezahlt: mb.reduce((s,p)=>s+p.eingezahlt,0), bilanz: mb.reduce((s,p)=>s+p.bilanz,0) };
+  });
+
+  return { bilanzen, transfers, gruppenBilanz };
+}
+
+// ── HILFSFUNKTIONEN ───────────────────────────────────────────────────────────
+const fmt = (n, w="EUR") => new Intl.NumberFormat("de-DE", { style:"currency", currency: w }).format(n || 0);
+const fmtDate = d => d ? new Date(d+"T12:00:00").toLocaleDateString("de-DE") : "–";
+const uid = () => Math.random().toString(36).slice(2,10);
+const getDays = (start, end) => {
+  const days = []; let d = new Date(start+"T12:00:00");
+  const e = new Date(end+"T12:00:00");
+  while (d <= e) { days.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
+  return days;
+};
+
+// ── URL-SHARE: State → URL → State ───────────────────────────────────────────
+function encodeState(personen, reisen) {
+  try {
+    const json = JSON.stringify({ personen, reisen });
+    const b64  = btoa(unescape(encodeURIComponent(json)));
+    return b64;
+  } catch(e) { return null; }
+}
+
+function decodeState(b64) {
+  try {
+    const json = decodeURIComponent(escape(atob(b64)));
+    return JSON.parse(json);
+  } catch(e) { return null; }
+}
+
+function loadFromURL() {
+  try {
+    const hash = window.location.hash.slice(1);
+    if (!hash) return null;
+    const params = new URLSearchParams(hash);
+    const data = params.get("d");
+    if (!data) return null;
+    return decodeState(data);
+  } catch(e) { return null; }
+}
+
+function Avatar({ name, farbe, size=36 }) {
+  return (
+    <div style={{ width:size, height:size, borderRadius:"50%", background: farbe||"#888",
+      display:"flex", alignItems:"center", justifyContent:"center",
+      color:"#fff", fontWeight:700, fontSize:size*0.38, flexShrink:0,
+      boxShadow:"0 2px 6px rgba(0,0,0,0.25)" }}>
+      {(name||"?").slice(0,2).toUpperCase()}
+    </div>
+  );
+}
+
+// ── BADGE ─────────────────────────────────────────────────────────────────────
+function Badge({ label, color="#888" }) {
+  return <span style={{ background:color+"22", color, border:`1px solid ${color}44`,
+    borderRadius:20, padding:"2px 9px", fontSize:11, fontWeight:600, whiteSpace:"nowrap" }}>{label}</span>;
+}
+
+// ── MODAL ─────────────────────────────────────────────────────────────────────
+function Modal({ open, onClose, title, width=520, children }) {
+  if (!open) return null;
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(8,10,20,0.8)", display:"flex",
+      alignItems:"center", justifyContent:"center", zIndex:1000, padding:16 }}
+      onClick={onClose}>
+      <div style={{ background:"#181b2c", border:"1px solid #2a2d42", borderRadius:18,
+        padding:28, width:`min(${width}px, 96vw)`, maxHeight:"92vh", overflowY:"auto" }}
+        onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+          <h3 style={{ margin:0, color:"#e8eaf0", fontSize:17 }}>{title}</h3>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:"#666", fontSize:24, cursor:"pointer", lineHeight:1 }}>×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── STYLES (zentral) ──────────────────────────────────────────────────────────
+const S = {
+  card: { background:"#1a1d2e", border:"1px solid #252840", borderRadius:14, padding:18, marginBottom:12 },
+  input: { background:"#0e1020", border:"1px solid #2a2d42", color:"#e0e2f0", borderRadius:8, padding:"9px 12px", width:"100%", fontSize:14, boxSizing:"border-box" },
+  select: { background:"#0e1020", border:"1px solid #2a2d42", color:"#e0e2f0", borderRadius:8, padding:"9px 12px", width:"100%", fontSize:14, boxSizing:"border-box" },
+  label: { display:"block", fontSize:11, color:"#888", marginBottom:5, fontWeight:700, letterSpacing:.5, textTransform:"uppercase" },
+  row: { marginBottom:14 },
+  btn: (c="#7eb8f7") => ({ background:c+"22", border:`1px solid ${c}44`, color:c, borderRadius:8, padding:"8px 16px", cursor:"pointer", fontSize:13, fontWeight:600 }),
+  btnPrimary: { background:"linear-gradient(90deg,#4a7fd4,#5aabda)", border:"none", color:"#fff", borderRadius:10, padding:"10px 22px", cursor:"pointer", fontWeight:700, fontSize:14 },
+  btnDanger: { background:"#e85a5a22", border:"1px solid #e85a5a44", color:"#e85a5a", borderRadius:8, padding:"8px 16px", cursor:"pointer", fontSize:13, fontWeight:600 },
+  statCard: { background:"linear-gradient(135deg,#1e2238,#181b2c)", border:"1px solid #2a2d42", borderRadius:14, padding:"16px 18px" },
+  h3: { color:"#7eb8f7", margin:"0 0 14px", fontSize:15, fontWeight:700 },
+  sep: { height:1, background:"#1e2238", margin:"16px 0" },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FORMULAR: AUSGABE (neu / bearbeiten)
+// ═══════════════════════════════════════════════════════════════════════════════
+function AusgabeModal({ open, onClose, reise, allPersonen, initial, onSave, onDelete }) {
+  const blank = {
+    beschreibung:"", betrag:"", datum: new Date().toISOString().slice(0,10),
+    bezahlerTyp:"person", bezahlerId: reise.gruppen[0]?.mitglieder[0] || "",
+    verteilungsModus:"anwesende", verteilungsZiele:[], extrakosten:[],
+  };
+  const [f, setF] = useState(initial || blank);
+  const [ekForm, setEkForm] = useState({ zielTyp:"gruppe", zielId:"", betrag:"" });
+
+  const update = (k,v) => setF(p => ({...p,[k]:v}));
+  const toggleZiel = id => setF(p => ({...p, verteilungsZiele: p.verteilungsZiele.includes(id) ? p.verteilungsZiele.filter(x=>x!==id) : [...p.verteilungsZiele, id]}));
+  const addEk = () => {
+    if (!ekForm.zielId || !ekForm.betrag) return;
+    setF(p => ({...p, extrakosten:[...p.extrakosten, {...ekForm, id:uid(), betrag:parseFloat(ekForm.betrag)}]}));
+    setEkForm({ zielTyp:"gruppe", zielId:"", betrag:"" });
+  };
+  const allPInReise = allPersonen.filter(p => reise.gruppen.some(g => g.mitglieder.includes(p.id)));
+
+  const bezahlerOptionen = f.bezahlerTyp==="person"
+    ? allPInReise.map(p => <option key={p.id} value={p.id}>{p.name} {p.nachname}</option>)
+    : reise.gruppen.map(g => <option key={g.id} value={g.id}>{g.name}</option>);
+
+  const ekZielOptionen = ekForm.zielTyp==="gruppe"
+    ? reise.gruppen.map(g => <option key={g.id} value={g.id}>{g.name}</option>)
+    : allPInReise.map(p => <option key={p.id} value={p.id}>{p.name}</option>);
+
+  return (
+    <Modal open={open} onClose={onClose} title={initial ? "Ausgabe bearbeiten" : "Neue Ausgabe"} width={580}>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+        <div style={{ gridColumn:"1/-1", ...S.row }}>
+          <label style={S.label}>Beschreibung</label>
+          <input style={S.input} value={f.beschreibung} onChange={e=>update("beschreibung",e.target.value)} placeholder="Wofür?" />
+        </div>
+        <div style={S.row}>
+          <label style={S.label}>Betrag (€)</label>
+          <input style={S.input} type="number" step="0.01" value={f.betrag} onChange={e=>update("betrag",e.target.value)} />
+        </div>
+        <div style={S.row}>
+          <label style={S.label}>Datum</label>
+          <input style={S.input} type="date" value={f.datum} onChange={e=>update("datum",e.target.value)} />
+        </div>
+        
+        <div style={S.row}>
+          <label style={S.label}>Bezahlt von – Typ</label>
+          <select style={S.select} value={f.bezahlerTyp} onChange={e=>update("bezahlerTyp",e.target.value)}>
+            <option value="person">Person</option>
+            <option value="gruppe">Gruppe</option>
+          </select>
+        </div>
+        <div style={S.row}>
+          <label style={S.label}>Bezahler</label>
+          <select style={S.select} value={f.bezahlerId} onChange={e=>update("bezahlerId",e.target.value)}>
+            {bezahlerOptionen}
+          </select>
+        </div>
+        
+        <div style={{ gridColumn:"1/-1", ...S.row }}>
+          <label style={S.label}>Verteilung</label>
+          <select style={S.select} value={f.verteilungsModus} onChange={e=>update("verteilungsModus",e.target.value)}>
+            <option value="alle">Alle Teilnehmer gleichmäßig</option>
+            <option value="anwesende">Nur Anwesende an diesem Tag</option>
+            <option value="gruppen">Nur bestimmte Gruppen</option>
+            <option value="personen">Nur bestimmte Personen</option>
+          </select>
+        </div>
+        
+        {(f.verteilungsModus==="gruppen"||f.verteilungsModus==="personen") && (
+          <div style={{ gridColumn:"1/-1", ...S.row }}>
+            <label style={S.label}>{f.verteilungsModus==="gruppen" ? "Gruppen auswählen" : "Personen auswählen"}</label>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+              {(f.verteilungsModus==="gruppen" ? reise.gruppen : allPInReise).map(x => {
+                const sel = f.verteilungsZiele.includes(x.id);
+                const c = x.farbe||"#888";
+                return <button key={x.id} onClick={()=>toggleZiel(x.id)}
+                  style={{ background:sel?c+"33":"#0e1020", border:`1px solid ${sel?c:"#2a2d42"}`, color:sel?c:"#666", borderRadius:8, padding:"6px 14px", cursor:"pointer", fontSize:13, fontWeight:sel?700:400 }}>
+                  {x.name}
+                </button>;
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      
+      <div style={S.sep} />
+      <div style={{ marginBottom:12 }}>
+        <label style={S.label}>➕ Extrakosten / Sonderanteile</label>
+        <div style={{ fontSize:12, color:"#555", marginBottom:10 }}>Betrag wird vom Gesamtbetrag abgezogen und direkt zugeordnet</div>
+        {f.extrakosten.map((ek,i) => {
+          const zname = ek.zielTyp==="gruppe"
+            ? reise.gruppen.find(g=>g.id===ek.zielId)?.name
+            : allPInReise.find(p=>p.id===ek.zielId)?.name;
+          return (
+            <div key={ek.id||i} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6, background:"#0e1020", borderRadius:8, padding:"6px 10px" }}>
+              <span style={{ fontSize:12, color:"#a0e4c8", flex:1 }}>{ek.zielTyp==="gruppe"?"👥":"👤"} {zname} → {fmt(ek.betrag)}</span>
+              <button onClick={()=>setF(p=>({...p,extrakosten:p.extrakosten.filter((_,j)=>j!==i)}))} style={{ background:"none", border:"none", color:"#e85a5a", cursor:"pointer", fontSize:16 }}>×</button>
+            </div>
+          );
+        })}
+        <div style={{ display:"grid", gridTemplateColumns:"auto 1fr 1fr auto", gap:8, marginTop:6 }}>
+          <select style={{...S.select, width:"auto"}} value={ekForm.zielTyp} onChange={e=>setEkForm(p=>({...p,zielTyp:e.target.value,zielId:""}))}>
+            <option value="gruppe">Gruppe</option>
+            <option value="person">Person</option>
+          </select>
+          <select style={S.select} value={ekForm.zielId} onChange={e=>setEkForm(p=>({...p,zielId:e.target.value}))}>
+            <option value="">– auswählen –</option>
+            {ekZielOptionen}
+          </select>
+          <input style={S.input} type="number" step="0.01" placeholder="Betrag" value={ekForm.betrag} onChange={e=>setEkForm(p=>({...p,betrag:e.target.value}))} />
+          <button style={S.btn("#a0e4c8")} onClick={addEk}>+</button>
+        </div>
+      </div>
+
+      <div style={{ display:"flex", gap:10, marginTop:6 }}>
+        <button style={S.btnPrimary} onClick={()=>onSave(f)}>Speichern</button>
+        {initial && <button style={S.btnDanger} onClick={()=>onDelete(initial.id)}>Löschen</button>}
+      </div>
+    </Modal>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HAUPT-APP
+// ═══════════════════════════════════════════════════════════════════════════════
+function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved }) {
+  const [aktReiseId, setAktReiseId] = useState(reisen[0]?.id);
+  const [tab, setTab] = useState("ausgaben");
+
+  // Modals
+  const [ausgabeModal,    setAusgabeModal]    = useState(null);
+  const [reiseModal,      setReiseModal]      = useState(false);
+  const [gruppeModal,     setGruppeModal]     = useState(null);
+  const [personModal,     setPersonModal]     = useState(null);
+  const [einzahlungModal, setEinzahlungModal] = useState(null);
+  const [shareModal,      setShareModal]      = useState(false);
+
+  // Filter
+  const [filterBezahler, setFilterBezahler] = useState("alle");
+  const [filterModus, setFilterModus] = useState("alle");
+
+  const reise = reisen.find(r=>r.id===aktReiseId) || reisen[0];
+  const updReise = useCallback((fn) => {
+    const next = reisen.map(r => r.id===aktReiseId ? fn(r) : r);
+    setReisen(next);
+  }, [aktReiseId, reisen, setReisen]);
+
+  const { bilanzen, transfers, gruppenBilanz } = useMemo(()=>berechne(reise, personen), [reise, personen]);
+  const allPInReise = personen.filter(p => reise.gruppen.some(g=>g.mitglieder.includes(p.id)));
+  const reiseDays = getDays(reise.startDatum, reise.endDatum);
+
+  // ── Personen-Farbe lookup ─────────────────────────────────────────────────
+  const pFarbe = id => personen.find(p=>p.id===id)?.farbe || "#888";
+  const pName  = id => { const p=personen.find(x=>x.id===id); return p ? `${p.name}` : id; };
+  const gName  = id => reise.gruppen.find(g=>g.id===id)?.name || id;
+  const gFarbe = id => reise.gruppen.find(g=>g.id===id)?.farbe || "#888";
+
+  // ── Ausgaben CRUD ─────────────────────────────────────────────────────────
+  function saveAusgabe(f) {
+    const betrag = parseFloat(f.betrag)||0;
+    if (!betrag || !f.beschreibung) return;
+    if (ausgabeModal && ausgabeModal !== "new") {
+      updReise(r=>({...r, ausgaben: r.ausgaben.map(a=>a.id===ausgabeModal.id ? {...f,id:a.id,betrag} : a)}));
+    } else {
+      updReise(r=>({...r, ausgaben:[...r.ausgaben, {...f,betrag,id:uid()}]}));
+    }
+    setAusgabeModal(null);
+  }
+  function deleteAusgabe(id) { updReise(r=>({...r,ausgaben:r.ausgaben.filter(a=>a.id!==id)})); setAusgabeModal(null); }
+
+  // ── Einzahlungen ──────────────────────────────────────────────────────────
+  function saveEinzahlungen(personId, einzahlungen) {
+    // Alle Einzahlungen dieser Person ersetzen
+    updReise(r=>({
+      ...r,
+      einzahlungen: [
+        ...r.einzahlungen.filter(e=>e.personId!==personId),
+        ...einzahlungen.map(e=>({...e, personId}))
+      ]
+    }));
+    setEinzahlungModal(null);
+  }
+
+  // ── Neue Reise ────────────────────────────────────────────────────────────
+  const [reiseForm, setReiseForm] = useState({ name:"", emoji:"✈️", startDatum:"", endDatum:"", waehrung:"EUR" });
+  function createReise() {
+    if (!reiseForm.name) return;
+    const nr = { id:uid(), ...reiseForm, gruppen:[], ausgaben:[], anwesenheit:{}, einzahlungen:[] };
+    setReisen(p=>[...p,nr]); setAktReiseId(nr.id); setReiseModal(false); setTab("ausgaben");
+  }
+
+  // ── Gruppen CRUD ──────────────────────────────────────────────────────────
+  const [gForm, setGForm] = useState({ name:"", farbe:PALETTE[0], mitglieder:[] });
+  function saveGruppe() {
+    if (!gForm.name) return;
+    if (gruppeModal && gruppeModal!=="new") {
+      updReise(r=>({...r,gruppen:r.gruppen.map(g=>g.id===gruppeModal.id?{...g,...gForm}:g)}));
+    } else {
+      updReise(r=>({...r,gruppen:[...r.gruppen,{id:uid(),...gForm}]}));
+    }
+    setGruppeModal(null);
+  }
+  function deleteGruppe(id) { updReise(r=>({...r,gruppen:r.gruppen.filter(g=>g.id!==id)})); setGruppeModal(null); }
+
+  // ── Personen CRUD ─────────────────────────────────────────────────────────
+  const [pForm, setPForm] = useState({ name:"", nachname:"", farbe:PALETTE[0] });
+  function savePerson() {
+    if (!pForm.name) return;
+    if (personModal && personModal!=="new") {
+      setPersonen(prev=>prev.map(p=>p.id===personModal.id?{...p,...pForm}:p));
+    } else {
+      setPersonen(prev=>[...prev,{id:uid(),...pForm}]);
+    }
+    setPersonModal(null);
+  }
+
+  // ── Ausgaben filtern ──────────────────────────────────────────────────────
+  const filteredAusgaben = reise.ausgaben.filter(a=>{
+    if (filterBezahler!=="alle" && a.bezahlerId!==filterBezahler) return false;
+    if (filterModus!=="alle" && a.verteilungsModus!==filterModus) return false;
+    return true;
+  }).sort((a,b)=>b.datum.localeCompare(a.datum));
+
+  const totalAusgaben = reise.ausgaben.reduce((s,a)=>s+(parseFloat(a.betrag)||0),0);
+  const totalEingezahlt = reise.einzahlungen.reduce((s,e)=>s+(parseFloat(e.betrag)||0),0);
+
+  // ── STYLING ───────────────────────────────────────────────────────────────
+  const [reisePickerOpen, setReisePickerOpen] = useState(false);
+
+  const MODUS_LABELS = { alle:"Alle", anwesende:"Tagesweise", gruppen:"Gruppen", personen:"Personen" };
+  const MODUS_COLORS = { alle:"#888", anwesende:"#5A9BE8", gruppen:"#5AC8A0", personen:"#E8C05A" };
+
+  const NAV_ITEMS = [
+    { key:"ausgaben",   icon:"💳", label:"Ausgaben"   },
+    { key:"abrechnung", icon:"⚖️", label:"Abrechnung" },
+    { key:"statistik",  icon:"📊", label:"Statistik"  },
+    { key:"gruppen",    icon:"👥", label:"Gruppen"    },
+    { key:"personen",   icon:"🧑", label:"Personen"   },
+  ];
+
+  // FAB-Aktion je Tab
+  const fabAction = () => {
+    if (tab==="ausgaben")   setAusgabeModal("new");
+    if (tab==="gruppen")    { setGForm({name:"",farbe:PALETTE[colorIdx%PALETTE.length],mitglieder:[]}); setGruppeModal("new"); }
+    if (tab==="personen")   { setPForm({name:"",nachname:"",farbe:nextColor()}); setPersonModal("new"); }
+  };
+  const fabLabel = { ausgaben:"+ Ausgabe", gruppen:"+ Gruppe", personen:"+ Person" };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"linear-gradient(135deg,#0d0f1a 0%,#111523 60%,#0a1020 100%)",
+      fontFamily:"'Segoe UI',system-ui,sans-serif", color:"#c8cad8", paddingBottom:80 }}>
+
+      
+      <div style={{ background:"linear-gradient(90deg,#1a1d30,#141728)", borderBottom:"1px solid #2a2d42",
+        padding:"12px 16px", position:"sticky", top:0, zIndex:200 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+
+          
+          <button onClick={()=>setReisePickerOpen(p=>!p)} style={{
+            display:"flex", alignItems:"center", gap:8, flex:1, minWidth:0,
+            background:"#252840", border:"1px solid #3a3d58", borderRadius:12,
+            padding:"8px 12px", cursor:"pointer", textAlign:"left",
+          }}>
+            <span style={{ fontSize:18 }}>{reise.emoji}</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontWeight:800, fontSize:15,
+                background:"linear-gradient(90deg,#7eb8f7,#a0e4c8)",
+                WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent",
+                overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                {reise.name}
+              </div>
+              {reise.startDatum && <div style={{ fontSize:11, color:"#555" }}>
+                {fmtDate(reise.startDatum)} – {fmtDate(reise.endDatum)}
+              </div>}
+            </div>
+            <span style={{ color:"#555", fontSize:12 }}>{reisePickerOpen?"▲":"▼"}</span>
+          </button>
+
+          
+          <div style={{ display:"flex", flexShrink:0, alignItems:"center", gap:8 }}>
+            <div style={{ display:"flex" }}>
+              {allPInReise.slice(0,4).map((p,i)=>(
+                <div key={p.id} style={{ marginLeft:i?-8:0, zIndex:10-i }}>
+                  <Avatar name={p.name} farbe={p.farbe} size={28}/>
+                </div>
+              ))}
+              {allPInReise.length>4 && (
+                <div style={{ width:28,height:28,borderRadius:"50%",background:"#252840",border:"1px solid #3a3d58",
+                  display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#888",marginLeft:-8 }}>
+                  +{allPInReise.length-4}
+                </div>
+              )}
+            </div>
+            
+            <button onClick={()=>setShareModal(true)} style={{
+              background:"#252840", border:"1px solid #3a3d58", color:"#7eb8f7",
+              borderRadius:10, padding:"6px 10px", cursor:"pointer",
+              fontSize:18, lineHeight:1, flexShrink:0,
+            }} title="Teilen">🔗</button>
+          </div>
+        </div>
+
+        {reisePickerOpen && (
+          <div style={{ marginTop:8, background:"#1a1d2e", border:"1px solid #2a2d42", borderRadius:12, overflow:"hidden" }}>
+            {reisen.map(r=>(
+              <button key={r.id} onClick={()=>{ setAktReiseId(r.id); setTab("ausgaben"); setReisePickerOpen(false); }}
+                style={{ width:"100%", display:"flex", alignItems:"center", gap:10,
+                  background:r.id===aktReiseId?"#252840":"transparent",
+                  border:"none", borderBottom:"1px solid #1e2235",
+                  color:r.id===aktReiseId?"#e0e2f0":"#888", padding:"11px 14px",
+                  cursor:"pointer", fontSize:14, fontWeight:r.id===aktReiseId?700:400, textAlign:"left" }}>
+                <span>{r.emoji}</span>
+                <span style={{ flex:1 }}>{r.name}</span>
+                {r.id===aktReiseId && <span style={{ color:"#7eb8f7", fontSize:16 }}>✓</span>}
+              </button>
+            ))}
+            <button onClick={()=>{ setReiseForm({name:"",emoji:"✈️",startDatum:"",endDatum:"",waehrung:"EUR"}); setReiseModal(true); setReisePickerOpen(false); }}
+              style={{ width:"100%", background:"transparent", border:"none", color:"#5A9BE8",
+                padding:"11px 14px", cursor:"pointer", fontSize:14, fontWeight:600, textAlign:"left" }}>
+              ＋ Neue Reise anlegen
+            </button>
+          </div>
+        )}
+      </div>
+      <div style={{ padding:"5px 16px", display:"flex", alignItems:"center", gap:6, borderBottom:"1px solid #2a2d42",
+        background: syncStatus==="ok"?"#0a1a0d": syncStatus==="speichern"?"#1a1408": syncStatus==="fehler"?"#1a0a0a":"#1a1d2e" }}>
+        <span style={{ fontSize:12 }}>{syncStatus==="ok"?"✓": syncStatus==="speichern"?"💾": syncStatus==="fehler"?"⚠️":"⏳"}</span>
+        <span style={{ fontSize:11, fontWeight:600, color: syncStatus==="ok"?"#5AC8A0": syncStatus==="speichern"?"#E8C05A": syncStatus==="fehler"?"#e85a5a":"#7eb8f7" }}>
+          {syncStatus==="ok"?(lastSaved?"Gespeichert "+lastSaved.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"}):"Verbunden"):syncStatus==="speichern"?"Wird gespeichert…":syncStatus==="fehler"?"Verbindungsfehler":"Lade Daten…"}
+        </span>
+        {syncStatus==="ok" && <span style={{ fontSize:11, color:"#444", marginLeft:"auto" }}>🔥 Live-Sync</span>}
+      </div>
+
+      <div style={{ padding:"16px 16px 0" }}>
+
+        
+        {tab==="ausgaben" && (<>
+          
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))", gap:12, marginBottom:18 }}>
+            {[["GESAMT",fmt(totalAusgaben),"#7eb8f7"],["EINGEZAHLT",fmt(totalEingezahlt),"#a0e4c8"],
+              ["BUCHUNGEN",reise.ausgaben.length,"#E8C05A"],["GRUPPEN",reise.gruppen.length,"#E85A8A"]].map(([l,v,c])=>(
+              <div key={l} style={S.statCard}>
+                <div style={{ fontSize:10,color:"#555",marginBottom:3,fontWeight:700,letterSpacing:.5 }}>{l}</div>
+                <div style={{ fontSize:21,fontWeight:800,color:c }}>{v}</div>
+              </div>
+            ))}
+          </div>
+          
+          <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap", alignItems:"center" }}>
+            <select style={{...S.select,width:"auto"}} value={filterBezahler} onChange={e=>setFilterBezahler(e.target.value)}>
+              <option value="alle">Alle Zahler</option>
+              {allPInReise.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              {reise.gruppen.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+            <select style={{...S.select,width:"auto"}} value={filterModus} onChange={e=>setFilterModus(e.target.value)}>
+              <option value="alle">Alle Modi</option>
+              <option value="alle">Alle gleichmäßig</option>
+              <option value="anwesende">Tagesweise</option>
+              <option value="gruppen">Gruppenweise</option>
+              <option value="personen">Personenweise</option>
+            </select>
+          </div>
+          
+          {filteredAusgaben.length===0 && <div style={{...S.card,color:"#555",textAlign:"center",padding:32}}>Noch keine Ausgaben</div>}
+          {filteredAusgaben.map(a=>{
+            const isp = a.bezahlerTyp==="person";
+            const farbe = isp ? pFarbe(a.bezahlerId) : gFarbe(a.bezahlerId);
+            const name  = isp ? pName(a.bezahlerId) : gName(a.bezahlerId);
+            const ekSumme = (a.extrakosten||[]).reduce((s,e)=>s+(parseFloat(e.betrag)||0),0);
+            return (
+              <div key={a.id} style={{...S.card,display:"flex",alignItems:"center",gap:12,cursor:"pointer"}}
+                onClick={()=>setAusgabeModal(a)}>
+                <Avatar name={name} farbe={farbe}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:600,color:"#e0e2f0",fontSize:14,marginBottom:3}}>{a.beschreibung}</div>
+                  <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                    <span style={{fontSize:12,color:farbe}}>{name}</span>
+                    <span style={{fontSize:12,color:"#444"}}>·</span>
+                    <span style={{fontSize:12,color:"#555"}}>{fmtDate(a.datum)}</span>
+                    <Badge label={MODUS_LABELS[a.verteilungsModus]||a.verteilungsModus} color={MODUS_COLORS[a.verteilungsModus]||"#888"}/>
+                    {ekSumme>0 && <Badge label={`EK ${fmt(ekSumme)}`} color="#C878D4"/>}
+                  </div>
+                </div>
+                <div style={{fontWeight:800,fontSize:16,color:"#7eb8f7",whiteSpace:"nowrap"}}>{fmt(a.betrag)}</div>
+              </div>
+            );
+          })}
+        </>)}
+
+        
+        {tab==="abrechnung" && (()=>{
+          // Gruppen-Transfers: Transfers auf Gruppenebene aggregieren
+          const gruppenTransfers = (()=>{
+            // Gruppen-Bilanz: Eingezahlt - Anteil je Gruppe
+            const gb = gruppenBilanz.map(g => ({ ...g, rest: g.bilanz }));
+            const gl = gb.filter(g => g.rest >  0.01).map(g => ({...g}));
+            const sc = gb.filter(g => g.rest < -0.01).map(g => ({...g, rest: Math.abs(g.rest)}));
+            const result = [];
+            let gi=0, si=0;
+            while (gi<gl.length && si<sc.length) {
+              const b = Math.min(gl[gi].rest, sc[si].rest);
+              if (b > 0.01) result.push({ vonId:sc[si].id, von:sc[si].name, vonFarbe:sc[si].farbe, anId:gl[gi].id, an:gl[gi].name, anFarbe:gl[gi].farbe, betrag:b });
+              gl[gi].rest -= b; sc[si].rest -= b;
+              if (gl[gi].rest < 0.01) gi++;
+              if (sc[si].rest < 0.01) si++;
+            }
+            return result;
+          })();
+
+          const maxBar = Math.max(...gruppenBilanz.map(g=>Math.max(g.gesamtAnteil, g.gesamtEingezahlt)), 1);
+
+          return (<>
+
+          
+          <div style={{ background: gruppenTransfers.length===0
+              ? "linear-gradient(135deg,#0d2010,#0a1a0d)"
+              : "linear-gradient(135deg,#1a1408,#120f04)",
+            border:`1px solid ${gruppenTransfers.length===0?"#1e4a28":"#3a2e08"}`,
+            borderRadius:14, padding:16, marginBottom:14 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom: gruppenTransfers.length===0?0:14 }}>
+              <span style={{ fontSize:18 }}>💸</span>
+              <span style={{ fontWeight:800, fontSize:15, color: gruppenTransfers.length===0?"#5AC8A0":"#E8C05A" }}>
+                Ausgleichsüberweisungen
+              </span>
+              {gruppenTransfers.length>0 && (
+                <span style={{ marginLeft:"auto", background:"#E8C05A22", border:"1px solid #E8C05A44",
+                  color:"#E8C05A", borderRadius:20, padding:"2px 10px", fontSize:12, fontWeight:700 }}>
+                  {gruppenTransfers.length} offen
+                </span>
+              )}
+            </div>
+            {gruppenTransfers.length===0
+              ? <div style={{ color:"#5AC8A0", fontSize:13, fontWeight:600 }}>✓ Alle Gruppen ausgeglichen!</div>
+              : gruppenTransfers.map((t,i)=>(
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
+                  background:"#0e1020", borderRadius:10, padding:"10px 12px",
+                  marginBottom: i<gruppenTransfers.length-1?8:0 }}>
+                  
+                  <div style={{ display:"flex", alignItems:"center", gap:6, flex:1, minWidth:0 }}>
+                    <div style={{ width:32, height:32, borderRadius:8, background:t.vonFarbe+"33",
+                      border:`2px solid ${t.vonFarbe}`, display:"flex", alignItems:"center",
+                      justifyContent:"center", fontSize:13, fontWeight:800, color:t.vonFarbe, flexShrink:0 }}>
+                      {t.von.slice(0,2)}
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10, color:"#555" }}>VON GRUPPE</div>
+                      <div style={{ fontWeight:700, color:"#e0e2f0", fontSize:14 }}>{t.von}</div>
+                    </div>
+                  </div>
+                  <div style={{ color:"#444", fontSize:20 }}>→</div>
+                  
+                  <div style={{ display:"flex", alignItems:"center", gap:6, flex:1, minWidth:0 }}>
+                    <div style={{ width:32, height:32, borderRadius:8, background:t.anFarbe+"33",
+                      border:`2px solid ${t.anFarbe}`, display:"flex", alignItems:"center",
+                      justifyContent:"center", fontSize:13, fontWeight:800, color:t.anFarbe, flexShrink:0 }}>
+                      {t.an.slice(0,2)}
+                    </div>
+                    <div>
+                      <div style={{ fontSize:10, color:"#555" }}>AN GRUPPE</div>
+                      <div style={{ fontWeight:700, color:"#7eb8f7", fontSize:14 }}>{t.an}</div>
+                    </div>
+                  </div>
+                  <div style={{ fontWeight:900, fontSize:20, color:"#E8C05A", whiteSpace:"nowrap", flexShrink:0 }}>
+                    {fmt(t.betrag)}
+                  </div>
+                </div>
+              ))
+            }
+          </div>
+
+          
+          <div style={{ background:"#1a1d2e", border:"1px solid #252840", borderRadius:14, padding:16, marginBottom:14 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+              <span style={{ fontSize:16 }}>💶</span>
+              <span style={{ fontWeight:800, fontSize:15, color:"#e0e2f0" }}>Einzahlungsstatus</span>
+              <span style={{ marginLeft:"auto", fontSize:12, color:"#555" }}>
+                {fmt(totalEingezahlt)} von {fmt(totalAusgaben)}
+              </span>
+            </div>
+            
+            <div style={{ height:6, background:"#0e1020", borderRadius:3, marginBottom:14, overflow:"hidden" }}>
+              <div style={{ height:"100%", borderRadius:3,
+                background:"linear-gradient(90deg,#4a7fd4,#5AC8A0)",
+                width:`${Math.min(100,(totalEingezahlt/Math.max(totalAusgaben,1))*100)}%` }}/>
+            </div>
+            
+            {gruppenBilanz.map(g=>{
+              const hatNichts   = g.gesamtEingezahlt < 0.01;
+              const istSchuldner= g.bilanz < -0.01;
+              const statusFarbe = hatNichts?"#e85a5a": istSchuldner?"#E8C05A":"#5AC8A0";
+              const statusIcon  = hatNichts?"⚠️": istSchuldner?"🔴":"✅";
+              const statusText  = hatNichts?"Noch nichts eingezahlt":
+                istSchuldner?`Noch ${fmt(Math.abs(g.bilanz))} offen`:
+                `${fmt(g.bilanz)} Guthaben`;
+              // Mitglieder als Avatare
+              const mitglieder = g.mitglieder.map(mid=>personen.find(p=>p.id===mid)).filter(Boolean);
+              return (
+                <div key={g.id} style={{ background: hatNichts?"#1a0a0a": istSchuldner?"#1a1408":"#0a1a0d",
+                  border:`1px solid ${statusFarbe}33`, borderRadius:12,
+                  padding:"12px 14px", marginBottom:10 }}>
+                  
+                  <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+                    <div style={{ width:36, height:36, borderRadius:10, background:g.farbe+"22",
+                      border:`2px solid ${g.farbe}`, display:"flex", alignItems:"center",
+                      justifyContent:"center", fontWeight:800, fontSize:14, color:g.farbe, flexShrink:0 }}>
+                      {g.name.slice(0,2)}
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontWeight:800, color:"#e0e2f0", fontSize:14 }}>{g.name}</div>
+                      
+                      <div style={{ display:"flex", gap:4, marginTop:4, flexWrap:"wrap" }}>
+                        {mitglieder.map((p,i)=>{
+                          const pb = bilanzen.find(b=>b.id===p.id);
+                          const total = (pb?.eingezahlt)||0;
+                          const manuell = (pb?.manuellEingezahlt)||0;
+                          const ausgBez = (pb?.bezahltAusgaben)||0;
+                          return (
+                            <div key={p.id} style={{ display:"flex", alignItems:"center", gap:4,
+                              background:"#0e1020", borderRadius:20, padding:"2px 8px 2px 4px",
+                              cursor:"pointer" }}
+                              onClick={()=>{ const pp=bilanzen.find(b=>b.id===p.id); if(pp) setEinzahlungModal(pp); }}>
+                              <Avatar name={p.name} farbe={p.farbe} size={18}/>
+                              <span style={{ fontSize:11, color:"#888" }}>{p.name}</span>
+                              {total>0
+                                ? <span style={{ fontSize:10, color:"#7eb8f7", fontWeight:700 }} title={`Ausgaben: ${fmt(ausgBez)} + Einzahlungen: ${fmt(manuell)}`}>
+                                    {fmt(total)}
+                                  </span>
+                                : <span style={{ fontSize:10, color:"#e85a5a" }}>–</span>
+                              }
+                            </div>
+                          );
+                        })}
+                        <button onClick={()=>{
+                          // Öffne Einzahlungsmodal für das erste Gruppenmitglied als Einstieg
+                          const erstePerson = bilanzen.find(b=>g.mitglieder.includes(b.id));
+                          if(erstePerson) setEinzahlungModal(erstePerson);
+                        }} style={{ background:"#252840", border:"1px solid #3a3d58", color:"#7eb8f7",
+                          borderRadius:20, padding:"2px 8px", fontSize:11, cursor:"pointer", fontWeight:600 }}>
+                          ✏️ Einzahlung
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div style={{ background:statusFarbe+"22", border:`1px solid ${statusFarbe}44`,
+                      borderRadius:10, padding:"6px 10px", textAlign:"center", flexShrink:0 }}>
+                      <div style={{ fontSize:10, color:statusFarbe, fontWeight:700 }}>
+                        {istSchuldner?"SCHULDEN": hatNichts?"OFFEN":"GUTHABEN"}
+                      </div>
+                      <div style={{ fontSize:16, fontWeight:900, color:statusFarbe }}>
+                        {g.bilanz>0?"+":""}{fmt(g.bilanz)}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div style={{ position:"relative", height:16, background:"#0e1020", borderRadius:8, overflow:"hidden", marginBottom:6 }}>
+                    <div style={{ position:"absolute", left:0, top:0, height:"100%",
+                      background:g.farbe+"33", borderRadius:8,
+                      width:`${(g.gesamtAnteil/maxBar)*100}%` }}/>
+                    <div style={{ position:"absolute", left:0, top:0, height:"100%",
+                      background:g.farbe, borderRadius:8,
+                      width:`${Math.min(100,(g.gesamtEingezahlt/maxBar)*100)}%` }}/>
+                  </div>
+                  <div style={{ display:"flex", justifyContent:"space-between", fontSize:11 }}>
+                    <span style={{ color:"#7eb8f7", fontWeight:700 }}>Eingezahlt: {fmt(g.gesamtEingezahlt)}</span>
+                    <span style={{ color:"#E8C05A", fontWeight:700 }}>Anteil: {fmt(g.gesamtAnteil)}</span>
+                  </div>
+                  <div style={{ fontSize:11, color:statusFarbe, fontWeight:600, marginTop:5 }}>
+                    {statusIcon} {statusText}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          
+          <h3 style={S.h3}>Personen-Detail</h3>
+          {bilanzen.map(p=>{
+            const pos = p.bilanz >= 0;
+            const col = pos?"#5AC8A0":"#e85a5a";
+            const ezReise = reise.einzahlungen.filter(e=>e.personId===p.id);
+            return (
+              <div key={p.id} style={{ display:"flex", alignItems:"center", gap:10,
+                background:"#1a1d2e", border:`1px solid ${col}33`,
+                borderRadius:10, padding:"10px 12px", marginBottom:8,
+                cursor:"pointer" }}
+                onClick={()=>setEinzahlungModal(p)}>
+                <Avatar name={p.name} farbe={p.farbe} size={32}/>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontWeight:700, color:"#e0e2f0", fontSize:13 }}>{p.name} {p.nachname}</div>
+                  <div style={{ fontSize:11, color:"#555", marginTop:2 }}>
+                    {p.bezahltAusgaben>0 && <span style={{ color:"#7eb8f7" }}>Ausgaben: {fmt(p.bezahltAusgaben)}</span>}
+                    {p.bezahltAusgaben>0 && p.manuellEingezahlt>0 && <span style={{ color:"#444" }}> + </span>}
+                    {p.manuellEingezahlt>0 && <span style={{ color:"#a0e4c8" }}>Einzahlung: {fmt(p.manuellEingezahlt)}</span>}
+                    {p.eingezahlt===0 && <span style={{ color:"#e85a5a" }}>Noch nichts ✏️</span>}
+                  </div>
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <div style={{ fontSize:13, fontWeight:800, color:col }}>{pos?"+":""}{fmt(p.bilanz)}</div>
+                  <div style={{ fontSize:10, color:"#555" }}>Gesamt: {fmt(p.eingezahlt)} / {fmt(p.anteil)}</div>
+                </div>
+              </div>
+            );
+          })}
+        </>);
+        })()}
+
+        
+        {tab==="statistik" && <StatistikTab reise={reise} bilanzen={bilanzen} gruppenBilanz={gruppenBilanz} allPersonen={personen} fmt={fmt} />}
+
+        
+        {tab==="gruppen" && (<>
+          <div style={{ marginBottom:16 }}>
+            <h3 style={{...S.h3,margin:0}}>Abrechnungsgruppen</h3>
+          </div>
+          <div style={{fontSize:12,color:"#555",marginBottom:16}}>
+            Gruppen fassen Personen zusammen. Ausgaben können nach Gruppen verteilt werden oder Extrakosten je Gruppe erhalten.
+          </div>
+          {reise.gruppen.length===0 && <div style={{...S.card,color:"#555",textAlign:"center",padding:32}}>Noch keine Gruppen</div>}
+          {reise.gruppen.map(g=>{
+            const gb = gruppenBilanz.find(x=>x.id===g.id);
+            return (
+              <div key={g.id} style={{...S.card,cursor:"pointer",borderColor:g.farbe+"33"}} onClick={()=>{setGForm({name:g.name,farbe:g.farbe,mitglieder:[...g.mitglieder]});setGruppeModal(g);}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+                  <div style={{width:14,height:14,borderRadius:"50%",background:g.farbe,flexShrink:0}}/>
+                  <span style={{fontWeight:700,color:"#e0e2f0",fontSize:16}}>{g.name}</span>
+                  <span style={{fontSize:12,color:"#555"}}>{g.mitglieder.length} Mitglieder</span>
+                  <div style={{flex:1}}/>
+                  {gb && <span style={{fontWeight:700,color:gb.bilanz>=0?"#5AC8A0":"#e85a5a",fontSize:14}}>{gb.bilanz>=0?"+":""}{fmt(gb.bilanz)}</span>}
+                </div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  {g.mitglieder.map(mid=>{
+                    const p=personen.find(x=>x.id===mid);
+                    return p ? <div key={mid} style={{display:"flex",alignItems:"center",gap:6,background:"#0e1020",borderRadius:20,padding:"4px 10px 4px 6px"}}>
+                      <Avatar name={p.name} farbe={p.farbe} size={22}/><span style={{fontSize:12,color:"#c8cad8"}}>{p.name}</span>
+                    </div> : null;
+                  })}
+                </div>
+
+              </div>
+            );
+          })}
+        </>)}
+
+        
+        {tab==="personen" && (<>
+          <div style={{ marginBottom:16 }}>
+            <h3 style={{...S.h3,margin:0}}>Personen & Anwesenheit</h3>
+          </div>
+          {allPInReise.map(p=>{
+            const tage = reise.anwesenheit[p.id]||[];
+            return (
+              <div key={p.id} style={S.card}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+                  <Avatar name={p.name} farbe={p.farbe}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:700,color:"#e0e2f0",cursor:"pointer"}} onClick={()=>{setPForm({name:p.name,nachname:p.nachname,farbe:p.farbe});setPersonModal(p);}}>
+                      {p.name} {p.nachname} <span style={{fontSize:11,color:"#555"}}>✏️</span>
+                    </div>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {reise.gruppen.filter(g=>g.mitglieder.includes(p.id)).map(g=><Badge key={g.id} label={g.name} color={g.farbe}/>)}
+                    </div>
+                  </div>
+                  <span style={{fontSize:12,color:"#555"}}>{tage.length}/{reiseDays.length} Tage</span>
+                </div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                  {reiseDays.map(d=>{
+                    const present=tage.includes(d);
+                    const short=new Date(d+"T12:00:00").toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit"});
+                    return <button key={d} onClick={()=>updReise(r=>{
+                      const curr=r.anwesenheit[p.id]||[];
+                      const next=curr.includes(d)?curr.filter(x=>x!==d):[...curr,d].sort();
+                      return {...r,anwesenheit:{...r.anwesenheit,[p.id]:next}};
+                    })} style={{
+                      background:present?p.farbe+"33":"#0e1020",
+                      border:`1px solid ${present?p.farbe:"#2a2d42"}`,
+                      color:present?p.farbe:"#444",
+                      borderRadius:6,padding:"4px 8px",fontSize:11,cursor:"pointer",fontWeight:present?700:400,
+                    }}>{short}</button>;
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </>)}
+
+      </div>
+
+      
+      {fabLabel[tab] && (
+        <button onClick={fabAction} style={{
+          position:"fixed", bottom:76, right:18, zIndex:300,
+          background:"linear-gradient(135deg,#4a7fd4,#5aabda)",
+          border:"none", borderRadius:28, padding:"13px 22px",
+          color:"#fff", fontWeight:800, fontSize:15,
+          boxShadow:"0 4px 20px rgba(74,127,212,0.5)",
+          cursor:"pointer", display:"flex", alignItems:"center", gap:6,
+        }}>
+          {fabLabel[tab]}
+        </button>
+      )}
+
+      
+      <nav style={{
+        position:"fixed", bottom:0, left:0, right:0, zIndex:200,
+        background:"#13162400", backdropFilter:"blur(0px)",
+      }}>
+        <div style={{
+          background:"linear-gradient(180deg,transparent 0%,#0d0f1a 30%)",
+          height:8,
+        }}/>
+        <div style={{
+          background:"#13162b", borderTop:"1px solid #2a2d42",
+          display:"flex",
+        }}>
+          {NAV_ITEMS.map(({key,icon,label})=>{
+            const active = tab===key;
+            return (
+              <button key={key} onClick={()=>setTab(key)} style={{
+                flex:1, display:"flex", flexDirection:"column", alignItems:"center",
+                justifyContent:"center", gap:3, padding:"10px 4px 12px",
+                background:"none", border:"none", cursor:"pointer",
+                color: active?"#7eb8f7":"#4a4d60",
+                borderTop: active?"2px solid #7eb8f7":"2px solid transparent",
+              }}>
+                <span style={{ fontSize:20, lineHeight:1 }}>{icon}</span>
+                <span style={{ fontSize:10, fontWeight: active?700:500, letterSpacing:.3 }}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      
+
+      
+      <ShareModal open={shareModal} onClose={()=>setShareModal(false)} personen={personen} reisen={reisen} />
+
+      
+      <Modal open={reiseModal} onClose={()=>setReiseModal(false)} title="Neue Reise">
+        {[["name","Name der Reise","text"],["emoji","Emoji","text"],["startDatum","Von","date"],["endDatum","Bis","date"],["waehrung","Währung","text"]].map(([k,l,t])=>(
+          <div key={k} style={S.row}><label style={S.label}>{l}</label>
+            <input style={S.input} type={t} value={reiseForm[k]} onChange={e=>setReiseForm(p=>({...p,[k]:e.target.value}))} />
+          </div>
+        ))}
+        <button style={S.btnPrimary} onClick={createReise}>Erstellen</button>
+      </Modal>
+
+      
+      <Modal open={!!gruppeModal} onClose={()=>setGruppeModal(null)} title={gruppeModal&&gruppeModal!=="new"?"Gruppe bearbeiten":"Neue Gruppe"}>
+        <div style={S.row}><label style={S.label}>Name</label>
+          <input style={S.input} value={gForm.name} onChange={e=>setGForm(p=>({...p,name:e.target.value}))} /></div>
+        <div style={S.row}><label style={S.label}>Farbe</label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {PALETTE.map(c=><button key={c} onClick={()=>setGForm(p=>({...p,farbe:c}))} style={{width:28,height:28,borderRadius:"50%",background:c,border:gForm.farbe===c?"3px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
+          </div>
+        </div>
+        <div style={S.row}><label style={S.label}>Mitglieder</label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {personen.map(p=>{
+              const sel=gForm.mitglieder.includes(p.id);
+              return <button key={p.id} onClick={()=>setGForm(f=>({...f,mitglieder:sel?f.mitglieder.filter(x=>x!==p.id):[...f.mitglieder,p.id]}))}
+                style={{background:sel?p.farbe+"33":"#0e1020",border:`1px solid ${sel?p.farbe:"#2a2d42"}`,color:sel?p.farbe:"#666",borderRadius:20,padding:"5px 12px",cursor:"pointer",fontSize:13,fontWeight:sel?700:400,display:"flex",alignItems:"center",gap:6}}>
+                <Avatar name={p.name} farbe={p.farbe} size={20}/>{p.name}
+              </button>;
+            })}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:10}}>
+          <button style={S.btnPrimary} onClick={saveGruppe}>Speichern</button>
+          {gruppeModal&&gruppeModal!=="new"&&<button style={S.btnDanger} onClick={()=>deleteGruppe(gruppeModal.id)}>Löschen</button>}
+        </div>
+      </Modal>
+
+      
+      <Modal open={!!personModal} onClose={()=>setPersonModal(null)} title={personModal&&personModal!=="new"?"Person bearbeiten":"Neue Person"}>
+        {[["name","Vorname"],["nachname","Nachname"]].map(([k,l])=>(
+          <div key={k} style={S.row}><label style={S.label}>{l}</label>
+            <input style={S.input} value={pForm[k]} onChange={e=>setPForm(p=>({...p,[k]:e.target.value}))} /></div>
+        ))}
+        <div style={S.row}><label style={S.label}>Farbe</label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            {PALETTE.map(c=><button key={c} onClick={()=>setPForm(p=>({...p,farbe:c}))} style={{width:28,height:28,borderRadius:"50%",background:c,border:pForm.farbe===c?"3px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
+          </div>
+        </div>
+        <button style={S.btnPrimary} onClick={savePerson}>Speichern</button>
+      </Modal>
+
+      {einzahlungModal && (
+        <Modal open={true} onClose={()=>setEinzahlungModal(null)} title={`Einzahlungen – ${einzahlungModal?.name}`}>
+          <EinzahlungForm person={einzahlungModal} reise={reise} onSave={saveEinzahlungen} />
+        </Modal>
+      )}
+
+      
+      {ausgabeModal && <AusgabeModal
+        open={true} onClose={()=>setAusgabeModal(null)}
+        reise={reise} allPersonen={personen}
+        initial={ausgabeModal==="new" ? null : ausgabeModal}
+        onSave={saveAusgabe} onDelete={deleteAusgabe}
+      />}
+
+    </div>
+  );
+}
+
+// ─── SHARE MODAL ─────────────────────────────────────────────────────────────
+function ShareModal({ open, onClose, personen, reisen }) {
+  const [copied, setCopied] = useState(false);
+  const [imported, setImported] = useState(false);
+  const [importError, setImportError] = useState(false);
+  const [importText, setImportText] = useState("");
+
+  const shareUrl = useMemo(() => {
+    if (!open) return "";
+    const encoded = encodeState(personen, reisen);
+    if (!encoded) return "";
+    const url = new URL(window.location.href.split("#")[0]);
+    url.hash = `d=${encoded}`;
+    return url.toString();
+  }, [open, personen, reisen]);
+
+  const sizeKB = Math.round(shareUrl.length / 1024 * 10) / 10;
+
+  function copyUrl() {
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    });
+  }
+
+  function doImport() {
+    setImportError(false);
+    // Versuche URL oder rohen Base64-String
+    let decoded = null;
+    try {
+      const hash = new URL(importText).hash.slice(1);
+      const params = new URLSearchParams(hash);
+      decoded = decodeState(params.get("d"));
+    } catch {
+      decoded = decodeState(importText.trim());
+    }
+    if (decoded?.personen && decoded?.reisen) {
+      // Seite mit neuem State neu laden
+      const encoded = encodeState(decoded.personen, decoded.reisen);
+      window.location.hash = `d=${encoded}`;
+      window.location.reload();
+    } else {
+      setImportError(true);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="🔗 Daten teilen & importieren" width={540}>
+      
+      <div style={{ background:"#0e1020", borderRadius:10, padding:12, marginBottom:18, fontSize:13, color:"#888", lineHeight:1.6 }}>
+        Alle Daten stecken im Link. Wer eine Änderung macht, drückt <strong style={{color:"#7eb8f7"}}>Link kopieren</strong> und schickt ihn in die Gruppe. Die anderen öffnen den Link – fertig.
+      </div>
+
+      
+      <div style={S.row}>
+        <label style={S.label}>Aktueller Stand als Link</label>
+        <div style={{ display:"flex", gap:8 }}>
+          <input readOnly style={{...S.input, flex:1, fontSize:11, color:"#555", cursor:"text"}}
+            value={shareUrl} onClick={e=>e.target.select()} />
+          <button style={{
+            ...S.btnPrimary, padding:"9px 16px", whiteSpace:"nowrap", flexShrink:0,
+            background: copied
+              ? "linear-gradient(90deg,#2a6a3a,#3a8a4a)"
+              : "linear-gradient(90deg,#4a7fd4,#5aabda)",
+          }} onClick={copyUrl}>
+            {copied ? "✓ Kopiert!" : "Link kopieren"}
+          </button>
+        </div>
+        <div style={{ fontSize:11, color:"#555", marginTop:5 }}>
+          Linkgröße: {sizeKB} KB
+        </div>
+      </div>
+
+      <div style={S.sep}/>
+
+      
+      <div style={S.row}>
+        <label style={S.label}>Link von jemand anderem importieren</label>
+        <textarea style={{...S.input, height:72, resize:"vertical", fontSize:12}}
+          placeholder="Empfangenen Link hier einfügen…"
+          value={importText} onChange={e=>setImportText(e.target.value)}/>
+        {importError && (
+          <div style={{ fontSize:12, color:"#e85a5a", marginTop:5 }}>
+            ⚠️ Ungültiger Link – bitte den vollständigen Link einfügen.
+          </div>
+        )}
+      </div>
+      <button style={{...S.btnPrimary, background:"linear-gradient(90deg,#7a4fd4,#9a6aea)"}}
+        onClick={doImport} disabled={!importText.trim()}>
+        Importieren & neu laden
+      </button>
+
+      <div style={{ fontSize:11, color:"#444", marginTop:14 }}>
+        Tipp: Speichert den Link als Lesezeichen – so könnt ihr jederzeit zur aktuellen Version zurück.
+      </div>
+    </Modal>
+  );
+}
+
+// ─── STATISTIK TAB ───────────────────────────────────────────────────────────
+function StatistikTab({ reise, bilanzen, gruppenBilanz, allPersonen, fmt }) {
+  const ausgaben = reise.ausgaben;
+
+  // ── Daten aufbereiten ──────────────────────────────────────────────────────
+
+  // 1. Ausgaben pro Tag (Zeitstrahl)
+  const tagesMap = {};
+  ausgaben.forEach(a => {
+    const d = a.datum;
+    tagesMap[d] = (tagesMap[d] || 0) + (parseFloat(a.betrag) || 0);
+  });
+  const tagesSorted = Object.entries(tagesMap).sort(([a],[b])=>a.localeCompare(b));
+
+  // 2. Ausgaben pro Person (wer hat bezahlt)
+  const perPersonMap = {};
+  ausgaben.forEach(a => {
+    const k = a.bezahlerId;
+    perPersonMap[k] = (perPersonMap[k] || 0) + (parseFloat(a.betrag) || 0);
+  });
+  const perPerson = Object.entries(perPersonMap)
+    .map(([id, val]) => {
+      const p = allPersonen.find(x=>x.id===id);
+      const g = reise.gruppen.find(x=>x.id===id);
+      return { id, name: p?.name || g?.name || id, farbe: p?.farbe || g?.farbe || "#888", val };
+    })
+    .sort((a,b)=>b.val-a.val);
+
+  // 3. Verteilungsmodus-Anteile
+  const modusMap = {};
+  ausgaben.forEach(a => { modusMap[a.verteilungsModus] = (modusMap[a.verteilungsModus]||0)+(parseFloat(a.betrag)||0); });
+  const modusEntries = Object.entries(modusMap).sort((a,b)=>b[1]-a[1]);
+  const MODUS_FARBEN = { alle:"#7eb8f7", anwesende:"#5AC8A0", gruppen:"#E8C05A", personen:"#E85A8A" };
+  const MODUS_NAMEN  = { alle:"Alle gleich", anwesende:"Tagesweise", gruppen:"Gruppen", personen:"Personen" };
+
+  // 4. Anteil vs. Eingezahlt pro Person
+  const total = ausgaben.reduce((s,a)=>s+(parseFloat(a.betrag)||0),0);
+
+  // ── SVG-Hilfskomponenten ───────────────────────────────────────────────────
+
+  // Horizontale Balken
+  function BarChart({ items, maxVal, height=36, gap=10 }) {
+    return (
+      <div>
+        {items.map((item, i) => (
+          <div key={item.id||i} style={{ marginBottom: gap }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+              <span style={{ fontSize:12, color:"#c8cad8", fontWeight:600 }}>{item.name}</span>
+              <span style={{ fontSize:12, color: item.farbe, fontWeight:700 }}>{fmt(item.val)}</span>
+            </div>
+            <div style={{ height, background:"#0e1020", borderRadius:height/2, overflow:"hidden" }}>
+              <div style={{
+                height:"100%", borderRadius:height/2,
+                background:`linear-gradient(90deg, ${item.farbe}cc, ${item.farbe}66)`,
+                width:`${Math.max(2,(item.val/maxVal)*100)}%`,
+                transition:"width .6s ease",
+                display:"flex", alignItems:"center", paddingLeft:10,
+              }}>
+                {(item.val/maxVal)>0.18 && <span style={{ fontSize:10, color:"#fff", fontWeight:700, opacity:.8 }}>
+                  {((item.val/total)*100).toFixed(1)}%
+                </span>}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Donut-Chart (SVG)
+  function DonutChart({ slices, size=160, thickness=32 }) {
+    const r = (size/2) - thickness/2;
+    const circ = 2 * Math.PI * r;
+    const totalVal = slices.reduce((s,x)=>s+x.val,0);
+    let offset = 0;
+    const paths = slices.map((s, i) => {
+      const frac = totalVal > 0 ? s.val/totalVal : 0;
+      const dash = frac * circ;
+      const gap  = circ - dash;
+      const el = (
+        <circle key={i}
+          cx={size/2} cy={size/2} r={r}
+          fill="none" stroke={s.farbe} strokeWidth={thickness}
+          strokeDasharray={`${dash} ${gap}`}
+          strokeDashoffset={-offset}
+          strokeLinecap="butt"
+          style={{ transform:`rotate(-90deg)`, transformOrigin:"50% 50%", transition:"stroke-dasharray .6s" }}
+        />
+      );
+      offset += dash;
+      return el;
+    });
+    return (
+      <svg width={size} height={size} style={{ display:"block", margin:"0 auto" }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#0e1020" strokeWidth={thickness}/>
+        {paths}
+        <text x={size/2} y={size/2-6} textAnchor="middle" fill="#e0e2f0" fontSize={13} fontWeight={800}>{slices.length}</text>
+        <text x={size/2} y={size/2+12} textAnchor="middle" fill="#666" fontSize={10}>Kategorien</text>
+      </svg>
+    );
+  }
+
+  // Linien-Chart (SVG) – Tagesausgaben
+  function LineChart({ data, width=320, height=120 }) {
+    if (data.length < 2) return <div style={{ color:"#555", fontSize:13, textAlign:"center", padding:20 }}>Zu wenig Daten</div>;
+    const vals = data.map(([,v])=>v);
+    const maxV = Math.max(...vals, 1);
+    const minV = 0;
+    const padL=8, padR=8, padT=12, padB=28;
+    const w = width - padL - padR;
+    const h = height - padT - padB;
+    const pts = data.map(([,v],i) => {
+      const x = padL + (i/(data.length-1))*w;
+      const y = padT + (1-(v-minV)/(maxV-minV))*h;
+      return [x,y];
+    });
+    const polyline = pts.map(([x,y])=>`${x},${y}`).join(" ");
+    const area = `${pts[0][0]},${padT+h} ${polyline} ${pts[pts.length-1][0]},${padT+h}`;
+
+    return (
+      <svg width="100%" viewBox={`0 0 ${width} ${height}`} style={{ overflow:"visible" }}>
+        
+        {[0,.5,1].map(f=>(
+          <line key={f} x1={padL} x2={padL+w} y1={padT+f*h} y2={padT+f*h} stroke="#1e2235" strokeWidth={1}/>
+        ))}
+        
+        <polygon points={area} fill="#7eb8f733"/>
+        
+        <polyline points={polyline} fill="none" stroke="#7eb8f7" strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round"/>
+        
+        {pts.map(([x,y],i)=>(
+          <g key={i}>
+            <circle cx={x} cy={y} r={3.5} fill="#7eb8f7" stroke="#0d0f1a" strokeWidth={1.5}/>
+            <text x={x} y={padT+h+16} textAnchor="middle" fill="#555" fontSize={9}>
+              {new Date(data[i][0]+"T12:00:00").toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit"})}
+            </text>
+          </g>
+        ))}
+        
+        {[0,0.5,1].map(f=>(
+          <text key={f} x={padL-2} y={padT+(1-f)*h+4} textAnchor="end" fill="#444" fontSize={9}>
+            {Math.round((minV+f*(maxV-minV)))}
+          </text>
+        ))}
+      </svg>
+    );
+  }
+
+  // Bilanz-Chart (Personen nebeneinander: Anteil vs. Eingezahlt)
+  function BilanzChart({ bilanzen }) {
+    const maxVal = Math.max(...bilanzen.flatMap(p=>[p.anteil, p.eingezahlt]), 1);
+    const barW = 18, gap = 8, groupW = barW*2+gap+20;
+    const h = 120, padB = 36, padT = 10;
+    const chartH = h - padT - padB;
+    const totalW = bilanzen.length * groupW + 16;
+
+    return (
+      <svg width="100%" viewBox={`0 0 ${totalW} ${h}`} style={{ overflow:"visible" }}>
+        
+        {[0,.5,1].map(f=>(
+          <line key={f} x1={0} x2={totalW} y1={padT+f*chartH} y2={padT+f*chartH} stroke="#1e2235" strokeWidth={1}/>
+        ))}
+        {bilanzen.map((p,i) => {
+          const x0 = 8 + i*groupW;
+          const anteilH = (p.anteil/maxVal)*chartH;
+          const einzH   = (p.eingezahlt/maxVal)*chartH;
+          return (
+            <g key={p.id}>
+              
+              <rect x={x0} y={padT+chartH-anteilH} width={barW} height={anteilH}
+                fill={p.farbe+"99"} rx={3}/>
+              
+              <rect x={x0+barW+4} y={padT+chartH-einzH} width={barW} height={einzH}
+                fill={p.farbe} rx={3}/>
+              
+              <text x={x0+barW+2} y={padT+chartH+14} textAnchor="middle" fill="#777" fontSize={9}>{p.name}</text>
+              
+              <text x={x0+barW+2} y={padT+chartH+24}
+                textAnchor="middle" fill={p.bilanz>=0?"#5AC8A0":"#e85a5a"} fontSize={8} fontWeight={700}>
+                {p.bilanz>=0?"+":""}{Math.round(p.bilanz)}
+              </text>
+            </g>
+          );
+        })}
+        
+        <rect x={totalW-80} y={4} width={10} height={10} fill="#88888899" rx={2}/>
+        <text x={totalW-67} y={13} fill="#666" fontSize={9}>Anteil</text>
+        <rect x={totalW-40} y={4} width={10} height={10} fill="#888888" rx={2}/>
+        <text x={totalW-27} y={13} fill="#666" fontSize={9}>Eingez.</text>
+      </svg>
+    );
+  }
+
+  const cardStyle = { background:"#1a1d2e", border:"1px solid #252840", borderRadius:14, padding:18, marginBottom:14 };
+
+  return (
+    <div>
+      
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+        {[
+          ["Gesamtausgaben", fmt(total), "#7eb8f7"],
+          ["Ø pro Person", fmt(total / Math.max(bilanzen.length,1)), "#a0e4c8"],
+          ["Teuerste Ausgabe", fmt(Math.max(...ausgaben.map(a=>parseFloat(a.betrag)||0), 0)), "#E8C05A"],
+          ["Ausgaben gesamt", ausgaben.length + " Buchungen", "#E85A8A"],
+        ].map(([l,v,c])=>(
+          <div key={l} style={{ background:"#1a1d2e", border:"1px solid #252840", borderRadius:12, padding:"12px 14px" }}>
+            <div style={{ fontSize:10, color:"#555", fontWeight:700, letterSpacing:.5, marginBottom:3 }}>{l.toUpperCase()}</div>
+            <div style={{ fontSize:17, fontWeight:800, color:c }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      
+      <div style={cardStyle}>
+        <div style={{ fontWeight:700, color:"#e0e2f0", marginBottom:14, fontSize:14 }}>📅 Ausgaben pro Tag</div>
+        <LineChart data={tagesSorted} width={340} height={130}/>
+      </div>
+
+      
+      <div style={cardStyle}>
+        <div style={{ fontWeight:700, color:"#e0e2f0", marginBottom:14, fontSize:14 }}>💳 Bezahlt von</div>
+        <BarChart items={perPerson} maxVal={perPerson[0]?.val||1} height={28} gap={10}/>
+      </div>
+
+      
+      <div style={cardStyle}>
+        <div style={{ fontWeight:700, color:"#e0e2f0", marginBottom:14, fontSize:14 }}>⚖️ Anteil vs. Eingezahlt</div>
+        <div style={{ overflowX:"auto" }}>
+          <BilanzChart bilanzen={bilanzen}/>
+        </div>
+        <div style={{ display:"flex", gap:16, marginTop:10, flexWrap:"wrap" }}>
+          {bilanzen.map(p=>(
+            <div key={p.id} style={{ display:"flex", alignItems:"center", gap:5 }}>
+              <div style={{ width:8, height:8, borderRadius:"50%", background:p.farbe }}/>
+              <span style={{ fontSize:11, color:"#888" }}>{p.name}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      
+      <div style={cardStyle}>
+        <div style={{ fontWeight:700, color:"#e0e2f0", marginBottom:14, fontSize:14 }}>🎯 Verteilung nach Modus</div>
+        <div style={{ display:"flex", alignItems:"center", gap:20 }}>
+          <div style={{ flexShrink:0 }}>
+            <DonutChart slices={modusEntries.map(([k,v])=>({ farbe: MODUS_FARBEN[k]||"#888", val:v, label:k }))} size={140} thickness={28}/>
+          </div>
+          <div style={{ flex:1 }}>
+            {modusEntries.map(([k,v])=>(
+              <div key={k} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:7 }}>
+                  <div style={{ width:10, height:10, borderRadius:3, background:MODUS_FARBEN[k]||"#888", flexShrink:0 }}/>
+                  <span style={{ fontSize:12, color:"#c8cad8" }}>{MODUS_NAMEN[k]||k}</span>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <span style={{ fontSize:12, fontWeight:700, color:MODUS_FARBEN[k]||"#888" }}>{fmt(v)}</span>
+                  <span style={{ fontSize:11, color:"#555", marginLeft:6 }}>{((v/total)*100).toFixed(0)}%</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      
+      <div style={cardStyle}>
+        <div style={{ fontWeight:700, color:"#e0e2f0", marginBottom:14, fontSize:14 }}>🏆 Top Ausgaben</div>
+        {[...ausgaben].sort((a,b)=>(parseFloat(b.betrag)||0)-(parseFloat(a.betrag)||0)).slice(0,5).map((a,i)=>{
+          const p = allPersonen.find(x=>x.id===a.bezahlerId);
+          const g = reise.gruppen.find(x=>x.id===a.bezahlerId);
+          const farbe = p?.farbe || g?.farbe || "#888";
+          const pct = ((parseFloat(a.betrag)||0)/total*100).toFixed(1);
+          return (
+            <div key={a.id} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
+              <div style={{ width:22, height:22, borderRadius:"50%", background:"#252840", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, color:"#888", flexShrink:0 }}>
+                {i+1}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:13, fontWeight:600, color:"#e0e2f0", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{a.beschreibung}</div>
+                <div style={{ height:4, background:"#0e1020", borderRadius:2, marginTop:4 }}>
+                  <div style={{ width:`${pct}%`, height:"100%", background:farbe, borderRadius:2 }}/>
+                </div>
+              </div>
+              <div style={{ textAlign:"right", flexShrink:0 }}>
+                <div style={{ fontSize:14, fontWeight:800, color:farbe }}>{fmt(parseFloat(a.betrag))}</div>
+                <div style={{ fontSize:10, color:"#555" }}>{pct}%</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── EINZAHLUNGS-FORMULAR (mehrere Einzahlungen pro Person) ──────────────────
+function EinzahlungForm({ person, reise, onSave }) {
+  const existing = reise.einzahlungen.filter(e=>e.personId===person.id);
+  const [einzahlungen, setEinzahlungen] = useState(
+    existing.length > 0
+      ? existing.map(e=>({ id:e.id||uid(), betrag:String(e.betrag), notiz:e.notiz||"", datum:e.datum||"" }))
+      : [{ id:uid(), betrag:"", notiz:"", datum:"" }]
+  );
+
+  function addZeile() {
+    setEinzahlungen(p=>[...p, { id:uid(), betrag:"", notiz:"", datum:"" }]);
+  }
+  function removeZeile(id) {
+    setEinzahlungen(p=>p.filter(e=>e.id!==id));
+  }
+  function updateZeile(id, key, val) {
+    setEinzahlungen(p=>p.map(e=>e.id===id ? {...e,[key]:val} : e));
+  }
+
+  const gesamt = einzahlungen.reduce((s,e)=>s+(parseFloat(e.betrag)||0),0);
+
+  function handleSave() {
+    const valid = einzahlungen.filter(e=>parseFloat(e.betrag)>0);
+    if (valid.length===0) return;
+    onSave(person.id, valid.map(e=>({
+      id: e.id,
+      betrag: parseFloat(e.betrag)||0,
+      notiz: e.notiz,
+      datum: e.datum,
+    })));
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize:12, color:"#555", marginBottom:14 }}>
+        Mehrere Teilzahlungen möglich – z.B. Vorauszahlung + Restbetrag
+      </div>
+
+      {einzahlungen.map((e, i) => (
+        <div key={e.id} style={{ background:"#0e1020", border:"1px solid #2a2d42", borderRadius:10, padding:12, marginBottom:10 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+            <span style={{ fontSize:12, color:"#555", fontWeight:700, minWidth:20 }}>#{i+1}</span>
+            <div style={{ flex:1 }}/>
+            {einzahlungen.length > 1 && (
+              <button onClick={()=>removeZeile(e.id)}
+                style={{ background:"none", border:"none", color:"#e85a5a", cursor:"pointer", fontSize:18, lineHeight:1 }}>×</button>
+            )}
+          </div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+            <div>
+              <label style={S.label}>Betrag (€)</label>
+              <input style={S.input} type="number" step="0.01" placeholder="0.00"
+                value={e.betrag} onChange={ev=>updateZeile(e.id,"betrag",ev.target.value)} />
+            </div>
+            <div>
+              <label style={S.label}>Datum</label>
+              <input style={S.input} type="date"
+                value={e.datum} onChange={ev=>updateZeile(e.id,"datum",ev.target.value)} />
+            </div>
+          </div>
+          <div>
+            <label style={S.label}>Notiz</label>
+            <input style={S.input} placeholder="z.B. Banküberweisung, Bar"
+              value={e.notiz} onChange={ev=>updateZeile(e.id,"notiz",ev.target.value)} />
+          </div>
+        </div>
+      ))}
+
+      <button onClick={addZeile} style={{...S.btn("#a0e4c8"), width:"100%", marginBottom:16, textAlign:"center"}}>
+        + Weitere Einzahlung hinzufügen
+      </button>
+
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+        background:"#1a1d2e", borderRadius:10, padding:"10px 14px", marginBottom:16 }}>
+        <span style={{ fontSize:13, color:"#888" }}>Gesamt</span>
+        <span style={{ fontSize:18, fontWeight:800, color:"#7eb8f7" }}>{new Intl.NumberFormat("de-DE",{style:"currency",currency:"EUR"}).format(gesamt)}</span>
+      </div>
+
+      <button style={S.btnPrimary} onClick={handleSave}>Speichern</button>
+    </div>
+  );
+}
+
+function AppWithSync() {
+  const seed = useMemo(() => makeSeedData(), []);
+  const [personen,   setPersonenState] = useState(seed.personen);
+  const [reisen,     setReisenState]   = useState(seed.reisen);
+  const [syncStatus, setSyncStatus]    = useState("laden");
+  const [lastSaved,  setLastSaved]     = useState(null);
+  const localVersion = useRef(0);
+  const isFirstLoad  = useRef(true);
+  const personenRef  = useRef(seed.personen);
+  const reisenRef    = useRef(seed.reisen);
+
+  useEffect(() => {
+    if (!window.fbSubscribe) { setSyncStatus("fehler"); return; }
+    const unsubscribe = window.fbSubscribe((data) => {
+      try {
+        if (!data) {
+          window.fbSave({ personen: seed.personen, reisen: seed.reisen, version: 1 })
+            .then(() => { setSyncStatus("ok"); setLastSaved(new Date()); })
+            .catch(() => setSyncStatus("fehler"));
+          isFirstLoad.current = false;
+          document.getElementById('loading').style.display = 'none';
+          return;
+        }
+        const incoming = data.version || 0;
+        if (isFirstLoad.current || incoming > localVersion.current) {
+          const p = (data.personen || seed.personen).map(p => ({ id:"", name:"", nachname:"", farbe:"#888", ...p }));
+          const r = (data.reisen || seed.reisen).map(r => ({
+            ...r,
+            gruppen:      (r.gruppen      || []).map(g => ({ id:"", name:"", farbe:"#888", mitglieder:[], ...g })),
+            ausgaben:     (r.ausgaben     || []).map(a => ({ id:"", beschreibung:"", betrag:0, datum:"", bezahlerTyp:"person", bezahlerId:"", verteilungsModus:"alle", verteilungsZiele:[], extrakosten:[], ...a })),
+            einzahlungen: (r.einzahlungen || []).map(e => ({ id:"", personId:"", betrag:0, notiz:"", datum:"", ...e })),
+            anwesenheit:  r.anwesenheit   || {},
+          }));
+          personenRef.current = p;
+          reisenRef.current   = r;
+          setPersonenState(p);
+          setReisenState(r);
+          localVersion.current = incoming;
+          setLastSaved(new Date());
+          setSyncStatus("ok");
+          isFirstLoad.current = false;
+          document.getElementById('loading').style.display = 'none';
+        }
+      } catch(e) { setSyncStatus("fehler"); }
+    });
+    return unsubscribe;
+  }, []);
+
+  function doSave(p, r) {
+    personenRef.current = p;
+    reisenRef.current   = r;
+    setSyncStatus("speichern");
+    const v = localVersion.current + 1;
+    localVersion.current = v;
+    window.fbSave({ personen: p, reisen: r, version: v })
+      .then(() => { setSyncStatus("ok"); setLastSaved(new Date()); })
+      .catch(() => setSyncStatus("fehler"));
+  }
+
+  function setPersonen(p) { setPersonenState(p); doSave(p, reisenRef.current); }
+  function setReisen(r)   { setReisenState(r);   doSave(personenRef.current, r); }
+
+  if (syncStatus === "laden") return null;
+
+  return <App personen={personen} setPersonen={setPersonen} reisen={reisen} setReisen={setReisen} syncStatus={syncStatus} lastSaved={lastSaved} />;
+}
+
+try {
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<AppWithSync />);
+} catch(e) {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('error-screen').classList.add('show');
+  document.getElementById('error-msg').textContent = 'React-Fehler: ' + e.message;
+}
+</script>
+</body>
+</html>
