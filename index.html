@@ -510,7 +510,7 @@ function AusgabeModal({ open, onClose, reise, allPersonen, initial, onSave, onDe
 // ═══════════════════════════════════════════════════════════════════════════════
 // HAUPT-APP
 // ═══════════════════════════════════════════════════════════════════════════════
-function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved }) {
+function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, isAdmin, onPinManager, onLogout }) {
   const [aktReiseId, setAktReiseId] = useState(reisen[0]?.id);
   const [tab, setTab] = useState("ausgaben");
 
@@ -684,6 +684,20 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved }
               borderRadius:10, padding:"6px 10px", cursor:"pointer",
               fontSize:18, lineHeight:1, flexShrink:0,
             }} title="Teilen">🔗</button>
+            {isAdmin && onPinManager && (
+              <button onClick={onPinManager} style={{
+                background:"#252840", border:"1px solid #3a3d58", color:"#E8C05A",
+                borderRadius:10, padding:"6px 10px", cursor:"pointer",
+                fontSize:18, lineHeight:1, flexShrink:0,
+              }} title="PIN-Verwaltung">🔐</button>
+            )}
+            {onLogout && (
+              <button onClick={onLogout} style={{
+                background:"#252840", border:"1px solid #3a3d58", color:"#888",
+                borderRadius:10, padding:"6px 10px", cursor:"pointer",
+                fontSize:18, lineHeight:1, flexShrink:0,
+              }} title="Abmelden">🚪</button>
+            )}
           </div>
         </div>
 
@@ -1667,12 +1681,208 @@ function EinzahlungForm({ person, reise, onSave }) {
   );
 }
 
+// ── PIN-HILFSFUNKTIONEN ──────────────────────────────────────────────────────
+// Einfaches Hash (kein kryptografisches Sicherheitsversprechen, aber besser als Klartext)
+async function hashPin(pin) {
+  const msgBuffer = new TextEncoder().encode(pin + "urlaubsapp2026");
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}
+
+const ADMIN_PIN_KEY = "__admin__";
+
+function PinScreen({ reisen, pins, onUnlock }) {
+  const [selectedReise, setSelectedReise] = useState(reisen[0]?.id || "");
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleLogin() {
+    if (!pin) return;
+    setLoading(true);
+    setError("");
+    const hashed = await hashPin(pin);
+    // Admin-Login
+    if (pins[ADMIN_PIN_KEY] && hashed === pins[ADMIN_PIN_KEY]) {
+      onUnlock("admin", null);
+      return;
+    }
+    // Reise-Login
+    if (pins[selectedReise] && hashed === pins[selectedReise]) {
+      onUnlock("reise", selectedReise);
+      return;
+    }
+    // Fallback: keine PINs gesetzt → Admin-Zugang mit "admin"
+    if (!pins[ADMIN_PIN_KEY] && pin === "admin") {
+      onUnlock("admin", null);
+      return;
+    }
+    setLoading(false);
+    setError("Falsche PIN – bitte erneut versuchen");
+    setPin("");
+  }
+
+  function handleKey(e) { if (e.key === "Enter") handleLogin(); }
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"linear-gradient(135deg,#0d0f1a,#111523)",
+      display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
+      <div style={{ background:"#1a1d2e", border:"1px solid #252840", borderRadius:20,
+        padding:32, width:"min(380px,96vw)", textAlign:"center" }}>
+        <div style={{ fontSize:48, marginBottom:8 }}>🔐</div>
+        <h2 style={{ color:"#e0e2f0", fontSize:20, fontWeight:800, marginBottom:4 }}>Urlaubs-Abrechnung</h2>
+        <p style={{ color:"#555", fontSize:13, marginBottom:24 }}>Bitte PIN eingeben</p>
+
+        {reisen.length > 1 && (
+          <div style={{ marginBottom:16 }}>
+            <label style={{ display:"block", fontSize:11, color:"#888", fontWeight:700, marginBottom:6, textTransform:"uppercase", letterSpacing:.5 }}>Reise auswählen</label>
+            <select value={selectedReise} onChange={e=>setSelectedReise(e.target.value)}
+              style={{ background:"#0e1020", border:"1px solid #2a2d42", color:"#e0e2f0",
+                borderRadius:10, padding:"10px 14px", width:"100%", fontSize:14 }}>
+              {reisen.map(r => <option key={r.id} value={r.id}>{r.emoji} {r.name}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div style={{ marginBottom:16 }}>
+          <label style={{ display:"block", fontSize:11, color:"#888", fontWeight:700, marginBottom:6, textTransform:"uppercase", letterSpacing:.5 }}>PIN</label>
+          <input type="password" inputMode="numeric" maxLength={8}
+            value={pin} onChange={e=>setPin(e.target.value.replace(/\D/g,""))} onKeyDown={handleKey}
+            placeholder="••••"
+            style={{ background:"#0e1020", border:"1px solid #2a2d42", color:"#e0e2f0",
+              borderRadius:10, padding:"12px 16px", width:"100%", fontSize:22, textAlign:"center",
+              letterSpacing:8, boxSizing:"border-box" }} />
+        </div>
+
+        {error && <div style={{ color:"#e85a5a", fontSize:13, marginBottom:12, fontWeight:600 }}>{error}</div>}
+
+        <button onClick={handleLogin} disabled={loading || !pin}
+          style={{ background:"linear-gradient(90deg,#4a7fd4,#5aabda)", border:"none",
+            color:"#fff", borderRadius:12, padding:"12px 0", width:"100%",
+            cursor: pin?"pointer":"not-allowed", fontWeight:800, fontSize:15,
+            opacity: pin?1:0.5 }}>
+          {loading ? "Prüfe…" : "Anmelden"}
+        </button>
+
+        {!pins[ADMIN_PIN_KEY] && (
+          <p style={{ color:"#333", fontSize:11, marginTop:16 }}>
+            Noch keine Admin-PIN gesetzt → PIN "admin" eingeben
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PinManager({ reisen, pins, onSave, onClose }) {
+  const [adminPin,    setAdminPin]    = useState("");
+  const [adminPin2,   setAdminPin2]   = useState("");
+  const [reisePins,   setReisePins]   = useState({});
+  const [reisePins2,  setReisePins2]  = useState({});
+  const [saving,      setSaving]      = useState(false);
+  const [saved,       setSaved]       = useState(false);
+  const [errors,      setErrors]      = useState({});
+
+  async function handleSave() {
+    const errs = {};
+    if (adminPin && adminPin !== adminPin2) errs.admin = "PINs stimmen nicht überein";
+    if (adminPin && adminPin.length < 4)   errs.adminLen = "Min. 4 Stellen";
+    reisen.forEach(r => {
+      if (reisePins[r.id] && reisePins[r.id] !== reisePins2[r.id]) errs[r.id] = "PINs stimmen nicht überein";
+      if (reisePins[r.id] && reisePins[r.id].length < 4) errs[r.id+"len"] = "Min. 4 Stellen";
+    });
+    if (Object.keys(errs).length > 0) { setErrors(errs); return; }
+
+    setSaving(true);
+    const newPins = { ...pins };
+    if (adminPin) newPins[ADMIN_PIN_KEY] = await hashPin(adminPin);
+    for (const r of reisen) {
+      if (reisePins[r.id]) newPins[r.id] = await hashPin(reisePins[r.id]);
+    }
+    await onSave(newPins);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => { setSaved(false); onClose(); }, 1200);
+  }
+
+  const inp = { background:"#0e1020", border:"1px solid #2a2d42", color:"#e0e2f0",
+    borderRadius:8, padding:"9px 12px", width:"100%", fontSize:14, boxSizing:"border-box" };
+  const lbl = { display:"block", fontSize:11, color:"#888", fontWeight:700,
+    marginBottom:5, textTransform:"uppercase", letterSpacing:.5 };
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(8,10,20,0.85)",
+      display:"flex", alignItems:"center", justifyContent:"center", zIndex:2000, padding:16 }}
+      onClick={onClose}>
+      <div style={{ background:"#181b2c", border:"1px solid #2a2d42", borderRadius:18,
+        padding:28, width:"min(480px,96vw)", maxHeight:"90vh", overflowY:"auto" }}
+        onClick={e=>e.stopPropagation()}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
+          <h3 style={{ margin:0, color:"#e8eaf0", fontSize:17 }}>🔐 PIN-Verwaltung</h3>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:"#666", fontSize:24, cursor:"pointer" }}>×</button>
+        </div>
+
+        <div style={{ background:"#0e1020", borderRadius:10, padding:12, marginBottom:20, fontSize:12, color:"#555", lineHeight:1.6 }}>
+          Leer lassen = PIN nicht ändern. Min. 4 Stellen (nur Ziffern).
+        </div>
+
+        <div style={{ marginBottom:20 }}>
+          <div style={{ fontWeight:700, color:"#7eb8f7", marginBottom:12, fontSize:14 }}>👑 Admin-PIN</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+            <div><label style={lbl}>Neue Admin-PIN</label>
+              <input style={inp} type="password" inputMode="numeric" maxLength={8} placeholder="••••"
+                value={adminPin} onChange={e=>setAdminPin(e.target.value.replace(/\D/g,""))} /></div>
+            <div><label style={lbl}>Wiederholen</label>
+              <input style={inp} type="password" inputMode="numeric" maxLength={8} placeholder="••••"
+                value={adminPin2} onChange={e=>setAdminPin2(e.target.value.replace(/\D/g,""))} /></div>
+          </div>
+          {errors.admin && <div style={{ color:"#e85a5a", fontSize:12, marginTop:4 }}>{errors.admin}</div>}
+          {errors.adminLen && <div style={{ color:"#e85a5a", fontSize:12, marginTop:4 }}>{errors.adminLen}</div>}
+          <div style={{ fontSize:11, color:"#444", marginTop:6 }}>Admin kann alle Reisen sehen + PINs verwalten</div>
+        </div>
+
+        <div style={{ height:1, background:"#1e2235", marginBottom:20 }}/>
+
+        <div style={{ fontWeight:700, color:"#a0e4c8", marginBottom:12, fontSize:14 }}>🏖 Reise-PINs</div>
+        {reisen.map(r => (
+          <div key={r.id} style={{ background:"#1a1d2e", borderRadius:10, padding:12, marginBottom:10 }}>
+            <div style={{ fontWeight:600, color:"#e0e2f0", marginBottom:10 }}>{r.emoji} {r.name}</div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+              <div><label style={lbl}>PIN</label>
+                <input style={inp} type="password" inputMode="numeric" maxLength={8} placeholder="••••"
+                  value={reisePins[r.id]||""} onChange={e=>setReisePins(p=>({...p,[r.id]:e.target.value.replace(/\D/g,"")}))} /></div>
+              <div><label style={lbl}>Wiederholen</label>
+                <input style={inp} type="password" inputMode="numeric" maxLength={8} placeholder="••••"
+                  value={reisePins2[r.id]||""} onChange={e=>setReisePins2(p=>({...p,[r.id]:e.target.value.replace(/\D/g,"")}))} /></div>
+            </div>
+            {errors[r.id] && <div style={{ color:"#e85a5a", fontSize:12, marginTop:4 }}>{errors[r.id]}</div>}
+            <div style={{ fontSize:11, color:"#444", marginTop:6 }}>
+              {pins[r.id] ? "✓ PIN gesetzt" : "Noch keine PIN gesetzt"}
+            </div>
+          </div>
+        ))}
+
+        <button onClick={handleSave} disabled={saving}
+          style={{ background: saved?"linear-gradient(90deg,#2a6a3a,#3a8a4a)":"linear-gradient(90deg,#4a7fd4,#5aabda)",
+            border:"none", color:"#fff", borderRadius:12, padding:"12px 0", width:"100%",
+            cursor:"pointer", fontWeight:800, fontSize:15, marginTop:8 }}>
+          {saved ? "✓ Gespeichert!" : saving ? "Speichere…" : "PINs speichern"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AppWithSync() {
   const seed = useMemo(() => makeSeedData(), []);
   const [personen,   setPersonenState] = useState(seed.personen);
   const [reisen,     setReisenState]   = useState(seed.reisen);
   const [syncStatus, setSyncStatus]    = useState("laden");
   const [lastSaved,  setLastSaved]     = useState(null);
+  const [pins,       setPinsState]     = useState({});
+  const [authState,  setAuthState]     = useState(null); // null=loading, {role,reiseId}=ok
+  const [showPinMgr, setShowPinMgr]   = useState(false);
   const localVersion = useRef(0);
   const isFirstLoad  = useRef(true);
   const personenRef  = useRef(seed.personen);
@@ -1683,11 +1893,12 @@ function AppWithSync() {
     const unsubscribe = window.fbSubscribe((data) => {
       try {
         if (!data) {
-          window.fbSave({ personen: seed.personen, reisen: seed.reisen, version: 1 })
+          window.fbSave({ personen: seed.personen, reisen: seed.reisen, version: 1, pins: {} })
             .then(() => { setSyncStatus("ok"); setLastSaved(new Date()); })
             .catch(() => setSyncStatus("fehler"));
           isFirstLoad.current = false;
           document.getElementById('loading').style.display = 'none';
+          setAuthState({ role:"admin", reiseId: null });
           return;
         }
         const incoming = data.version || 0;
@@ -1704,6 +1915,7 @@ function AppWithSync() {
           reisenRef.current   = r;
           setPersonenState(p);
           setReisenState(r);
+          setPinsState(data.pins || {});
           localVersion.current = incoming;
           setLastSaved(new Date());
           setSyncStatus("ok");
@@ -1715,13 +1927,14 @@ function AppWithSync() {
     return unsubscribe;
   }, []);
 
-  function doSave(p, r) {
+  function doSave(p, r, newPins) {
+    const pinsToSave = newPins !== undefined ? newPins : pins;
     personenRef.current = p;
     reisenRef.current   = r;
     setSyncStatus("speichern");
     const v = localVersion.current + 1;
     localVersion.current = v;
-    window.fbSave({ personen: p, reisen: r, version: v })
+    window.fbSave({ personen: p, reisen: r, version: v, pins: pinsToSave })
       .then(() => { setSyncStatus("ok"); setLastSaved(new Date()); })
       .catch(() => setSyncStatus("fehler"));
   }
@@ -1729,9 +1942,46 @@ function AppWithSync() {
   function setPersonen(p) { setPersonenState(p); doSave(p, reisenRef.current); }
   function setReisen(r)   { setReisenState(r);   doSave(personenRef.current, r); }
 
+  async function savePins(newPins) {
+    setPinsState(newPins);
+    doSave(personenRef.current, reisenRef.current, newPins);
+  }
+
+  // Noch laden
   if (syncStatus === "laden") return null;
 
-  return <App personen={personen} setPersonen={setPersonen} reisen={reisen} setReisen={setReisen} syncStatus={syncStatus} lastSaved={lastSaved} />;
+  // PIN-Screen: zeigen wenn nicht authentifiziert und PINs gesetzt sind
+  const hasPins = Object.keys(pins).length > 0;
+  if (!authState) {
+    if (hasPins) {
+      return <PinScreen reisen={reisen} pins={pins} onUnlock={(role, reiseId) => setAuthState({role, reiseId})} />;
+    } else {
+      // Keine PINs → direkt als Admin rein
+      setAuthState({ role:"admin", reiseId: null });
+      return null;
+    }
+  }
+
+  // Gefilterte Reisen je nach Rolle
+  const sichtbareReisen = authState.role === "admin"
+    ? reisen
+    : reisen.filter(r => r.id === authState.reiseId);
+
+  return (
+    <>
+      {showPinMgr && authState.role === "admin" && (
+        <PinManager reisen={reisen} pins={pins} onSave={savePins} onClose={()=>setShowPinMgr(false)} />
+      )}
+      <App
+        personen={personen} setPersonen={setPersonen}
+        reisen={sichtbareReisen} setReisen={setReisen}
+        syncStatus={syncStatus} lastSaved={lastSaved}
+        isAdmin={authState.role === "admin"}
+        onPinManager={()=>setShowPinMgr(true)}
+        onLogout={()=>setAuthState(null)}
+      />
+    </>
+  );
 }
 
 try {
