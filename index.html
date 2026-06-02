@@ -510,7 +510,7 @@ function AusgabeModal({ open, onClose, reise, allPersonen, initial, onSave, onDe
 // ═══════════════════════════════════════════════════════════════════════════════
 // HAUPT-APP
 // ═══════════════════════════════════════════════════════════════════════════════
-function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, isAdmin, onPinManager, onLogout }) {
+function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, isAdmin, onPinManager, onLogout, pins, onSavePin, onClearPin }) {
   const [aktReiseId, setAktReiseId] = useState(reisen[0]?.id);
   const [tab, setTab] = useState("ausgaben");
 
@@ -1278,6 +1278,25 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
       )}
 
       
+      {reiseEditModal && (
+        <ReiseEditModal
+          reise={reiseEditModal}
+          pins={pins||{}}
+          onSave={(updated) => {
+            setReisen(reisen.map(r => r.id===updated.id ? {...r,...updated} : r));
+            setReiseEditModal(null);
+          }}
+          onDelete={(id) => {
+            const remaining = reisen.filter(r => r.id!==id);
+            setReisen(remaining);
+            if (aktReiseId===id && remaining.length>0) setAktReiseId(remaining[0].id);
+            setReiseEditModal(null);
+          }}
+          onSavePin={onSavePin}
+          onClearPin={onClearPin}
+          onClose={()=>setReiseEditModal(null)}
+        />
+      )}
       {ausgabeModal && <AusgabeModal
         open={true} onClose={()=>setAusgabeModal(null)}
         reise={reise} allPersonen={personen}
@@ -2201,33 +2220,7 @@ function AppWithSync() {
 
   return (
     <>
-      {reiseEditModal && (
-        <ReiseEditModal
-          reise={reiseEditModal}
-          pins={pins||{}}
-          onSave={(updated) => {
-            setReisen(reisen.map(r => r.id===updated.id ? {...r,...updated} : r));
-            setReiseEditModal(null);
-          }}
-          onDelete={(id) => {
-            const remaining = reisen.filter(r => r.id!==id);
-            setReisen(remaining);
-            if (aktReiseId===id && remaining.length>0) setAktReiseId(remaining[0].id);
-            setReiseEditModal(null);
-          }}
-          onSavePin={async (reiseId, pin) => {
-            const hashed = await hashPin(pin);
-            const newPins = {...(pins||{}), [reiseId]: hashed};
-            await savePins(newPins);
-          }}
-          onClearPin={(reiseId) => {
-            const newPins = {...(pins||{})};
-            delete newPins[reiseId];
-            savePins(newPins);
-          }}
-          onClose={()=>setReiseEditModal(null)}
-        />
-      )}
+
       {showPinMgr && authState.role === "admin" && (
         <PinManager reisen={reisen} pins={pins} onSave={savePins} onClose={()=>setShowPinMgr(false)} />
       )}
@@ -2238,6 +2231,17 @@ function AppWithSync() {
         isAdmin={authState.role === "admin"}
         onPinManager={()=>setShowPinMgr(true)}
         onLogout={()=>setAuthState(null)}
+        pins={pins||{}}
+        onSavePin={async (reiseId, pin) => {
+          const hashed = await hashPin(pin);
+          const newPins = {...(pins||{}), [reiseId]: hashed};
+          await savePins(newPins);
+        }}
+        onClearPin={(reiseId) => {
+          const newPins = {...(pins||{})};
+          delete newPins[reiseId];
+          savePins(newPins);
+        }}
       />
     </>
   );
