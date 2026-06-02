@@ -573,7 +573,7 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
   function createReise() {
     if (!reiseForm.name) return;
     const nr = { id:uid(), ...reiseForm, gruppen:[], ausgaben:[], anwesenheit:{}, einzahlungen:[] };
-    setReisen(p=>[...p,nr]); setAktReiseId(nr.id); setReiseModal(false); setTab("ausgaben");
+    setReisen([...reisen,nr]); setAktReiseId(nr.id); setReiseModal(false); setTab("ausgaben");
   }
 
   // ── Gruppen CRUD ──────────────────────────────────────────────────────────
@@ -594,9 +594,9 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
   function savePerson() {
     if (!pForm.name) return;
     if (personModal && personModal!=="new") {
-      setPersonen(prev=>prev.map(p=>p.id===personModal.id?{...p,...pForm}:p));
+      setPersonen(personen.map(p=>p.id===personModal.id?{...p,...pForm}:p));
     } else {
-      setPersonen(prev=>[...prev,{id:uid(),...pForm}]);
+      setPersonen([...personen,{id:uid(),...pForm}]);
     }
     setPersonModal(null);
   }
