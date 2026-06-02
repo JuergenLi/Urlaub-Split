@@ -178,6 +178,7 @@ function makeSeedData() {
       id: "texel2026", name: "Texel 2026", emoji: "🏖",
       startDatum: "2026-05-26", endDatum: "2026-06-05", waehrung: "EUR",
       gruppen, anwesenheit, einzahlungen, ausgaben,
+      personenIds: ["bettina","juergen","petra","dieter","martin","erik","paulina"],
     }],
   };
 }
@@ -545,7 +546,11 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
   }, [aktReiseId, reisen, setReisen]);
 
   const { bilanzen, transfers, gruppenBilanz } = useMemo(()=>berechne(reise, personen), [reise, personen]);
-  const allPInReise = personen.filter(p => reise.gruppen.some(g=>g.mitglieder.includes(p.id)));
+  const reisePersonenIds = reise.personenIds || [];
+  const allPInReise = personen.filter(p =>
+    reise.gruppen.some(g=>g.mitglieder.includes(p.id)) ||
+    reisePersonenIds.includes(p.id)
+  );
   const reiseDays = getDays(reise.startDatum, reise.endDatum);
 
   // ── Personen-Farbe lookup ─────────────────────────────────────────────────
@@ -584,7 +589,7 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
   const [reiseForm, setReiseForm] = useState({ name:"", emoji:"✈️", startDatum:"", endDatum:"", waehrung:"EUR" });
   function createReise() {
     if (!reiseForm.name) return;
-    const nr = { id:uid(), ...reiseForm, gruppen:[], ausgaben:[], anwesenheit:{}, einzahlungen:[] };
+    const nr = { id:uid(), ...reiseForm, gruppen:[], ausgaben:[], anwesenheit:{}, einzahlungen:[], personenIds:[] };
     setReisen([...reisen,nr]); setAktReiseId(nr.id); setReiseModal(false); setTab("ausgaben");
   }
 
@@ -608,7 +613,15 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
     if (personModal && personModal!=="new") {
       setPersonen(personen.map(p=>p.id===personModal.id?{...p,...pForm}:p));
     } else {
-      setPersonen([...personen,{id:uid(),...pForm}]);
+      const newId = uid();
+      const newPerson = {id:newId,...pForm};
+      setPersonen([...personen, newPerson]);
+      // Neue Person automatisch zur aktuellen Reise hinzufügen
+      updReise(r=>({
+        ...r,
+        personenIds: [...(r.personenIds||[]), newId],
+        anwesenheit: {...(r.anwesenheit||{}), [newId]: reiseDays}
+      }));
     }
     setPersonModal(null);
   }
@@ -1129,9 +1142,31 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
 
         
         {tab==="personen" && (<>
-          <div style={{ marginBottom:16 }}>
+          <div style={{ marginBottom:12 }}>
             <h3 style={{...S.h3,margin:0}}>Personen & Anwesenheit</h3>
           </div>
+          {personen.filter(p => !allPInReise.find(x=>x.id===p.id) && !(reise.personenIds||[]).includes(p.id)).length > 0 && (
+            <div style={{ background:"#1a1d2e", border:"1px solid #252840", borderRadius:12, padding:12, marginBottom:14 }}>
+              <div style={{ fontSize:12, color:"#888", marginBottom:8, fontWeight:600 }}>Vorhandene Personen zur Reise hinzufügen:</div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                {personen.filter(p => !allPInReise.find(x=>x.id===p.id) && !(reise.personenIds||[]).includes(p.id)).map(p=>(
+                  <button key={p.id} onClick={()=>updReise(r=>({
+                    ...r,
+                    personenIds:[...(r.personenIds||[]), p.id],
+                    anwesenheit:{...(r.anwesenheit||{}), [p.id]: reiseDays}
+                  }))}
+                    style={{ display:"flex", alignItems:"center", gap:6,
+                      background:p.farbe+"22", border:`1px solid ${p.farbe}44`,
+                      color:p.farbe, borderRadius:20, padding:"5px 12px",
+                      cursor:"pointer", fontSize:13, fontWeight:600 }}>
+                    <Avatar name={p.name} farbe={p.farbe} size={20}/>
+                    {p.name} {p.nachname}
+                    <span style={{ fontSize:11 }}>+</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {allPInReise.map(p=>{
             const tage = reise.anwesenheit[p.id]||[];
             return (
@@ -1242,7 +1277,10 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
         </div>
         <div style={S.row}><label style={S.label}>Mitglieder</label>
           <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-            {personen.map(p=>{
+            {(reise.personenIds && reise.personenIds.length > 0
+                ? personen.filter(p => reise.personenIds.includes(p.id))
+                : personen
+              ).map(p=>{
               const sel=gForm.mitglieder.includes(p.id);
               return <button key={p.id} onClick={()=>setGForm(f=>({...f,mitglieder:sel?f.mitglieder.filter(x=>x!==p.id):[...f.mitglieder,p.id]}))}
                 style={{background:sel?p.farbe+"33":"#0e1020",border:`1px solid ${sel?p.farbe:"#2a2d42"}`,color:sel?p.farbe:"#666",borderRadius:20,padding:"5px 12px",cursor:"pointer",fontSize:13,fontWeight:sel?700:400,display:"flex",alignItems:"center",gap:6}}>
@@ -2148,6 +2186,7 @@ function AppWithSync() {
             ausgaben:     (r.ausgaben     || []).map(a => ({ id:"", beschreibung:"", betrag:0, datum:"", bezahlerTyp:"person", bezahlerId:"", verteilungsModus:"alle", verteilungsZiele:[], extrakosten:[], ...a })),
             einzahlungen: (r.einzahlungen || []).map(e => ({ id:"", personId:"", betrag:0, notiz:"", datum:"", ...e })),
             anwesenheit:  r.anwesenheit   || {},
+            personenIds:  Array.isArray(r.personenIds) ? r.personenIds : [],
           }));
           personenRef.current = p;
           reisenRef.current   = r;
