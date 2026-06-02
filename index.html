@@ -626,6 +626,23 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
     setPersonModal(null);
   }
 
+  function deletePerson(id) {
+    setPersonen(personen.filter(p => p.id !== id));
+    setReisen(reisen.map(r => ({
+      ...r,
+      personenIds:  (r.personenIds  || []).filter(pid => pid !== id),
+      gruppen:      (r.gruppen      || []).map(g => ({...g, mitglieder: g.mitglieder.filter(m => m !== id)})),
+      einzahlungen: (r.einzahlungen || []).filter(e => e.personId !== id),
+      ausgaben:     (r.ausgaben     || []).map(a => ({
+        ...a,
+        bezahlerId: a.bezahlerId === id ? "" : a.bezahlerId,
+        verteilungsZiele: (a.verteilungsZiele || []).filter(z => z !== id),
+      })),
+      anwesenheit: Object.fromEntries(Object.entries(r.anwesenheit || {}).filter(([pid]) => pid !== id)),
+    })));
+    setPersonModal(null);
+  }
+
   // ── Ausgaben filtern ──────────────────────────────────────────────────────
   const filteredAusgaben = reise.ausgaben.filter(a=>{
     if (filterBezahler!=="alle" && a.bezahlerId!==filterBezahler) return false;
@@ -1174,8 +1191,16 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
                 <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
                   <Avatar name={p.name} farbe={p.farbe}/>
                   <div style={{flex:1}}>
-                    <div style={{fontWeight:700,color:"#e0e2f0",cursor:"pointer"}} onClick={()=>{setPForm({name:p.name,nachname:p.nachname,farbe:p.farbe});setPersonModal(p);}}>
-                      {p.name} {p.nachname} <span style={{fontSize:11,color:"#555"}}>✏️</span>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <div style={{fontWeight:700,color:"#e0e2f0",cursor:"pointer"}} onClick={()=>{setPForm({name:p.name,nachname:p.nachname,farbe:p.farbe});setPersonModal(p);}}>
+                        {p.name} {p.nachname} <span style={{fontSize:11,color:"#555"}}>✏️</span>
+                      </div>
+                      <button onClick={()=>updReise(r=>({
+                        ...r,
+                        personenIds:(r.personenIds||[]).filter(pid=>pid!==p.id),
+                        gruppen:(r.gruppen||[]).map(g=>({...g,mitglieder:g.mitglieder.filter(m=>m!==p.id)})),
+                      }))} title="Aus dieser Reise entfernen"
+                        style={{background:"none",border:"none",color:"#444",cursor:"pointer",fontSize:14,padding:"2px 4px"}}>✕</button>
                     </div>
                     <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                       {reise.gruppen.filter(g=>g.mitglieder.includes(p.id)).map(g=><Badge key={g.id} label={g.name} color={g.farbe}/>)}
@@ -1306,7 +1331,12 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
             {PALETTE.map(c=><button key={c} onClick={()=>setPForm(p=>({...p,farbe:c}))} style={{width:28,height:28,borderRadius:"50%",background:c,border:pForm.farbe===c?"3px solid #fff":"2px solid transparent",cursor:"pointer"}}/>)}
           </div>
         </div>
-        <button style={S.btnPrimary} onClick={savePerson}>Speichern</button>
+        <div style={{display:"flex",gap:10,marginTop:6}}>
+          <button style={S.btnPrimary} onClick={savePerson}>Speichern</button>
+          {personModal && personModal!=="new" && (
+            <PersonDeleteButton person={personModal} onDelete={()=>deletePerson(personModal.id)} />
+          )}
+        </div>
       </Modal>
 
       {einzahlungModal && (
@@ -1736,6 +1766,35 @@ function StatistikTab({ reise, bilanzen, gruppenBilanz, allPersonen, fmt }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ─── PERSON LÖSCHEN BUTTON (mit Bestätigung) ─────────────────────────────────
+function PersonDeleteButton({ person, onDelete }) {
+  const [confirm, setConfirm] = useState(false);
+  if (!confirm) {
+    return (
+      <button onClick={()=>setConfirm(true)}
+        style={{ background:"#e85a5a22", border:"1px solid #e85a5a44", color:"#e85a5a",
+          borderRadius:8, padding:"8px 16px", cursor:"pointer", fontSize:13, fontWeight:600 }}>
+        Löschen
+      </button>
+    );
+  }
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:8, background:"#1a0a0a",
+      border:"1px solid #e85a5a44", borderRadius:8, padding:"6px 10px" }}>
+      <span style={{ fontSize:12, color:"#e85a5a" }}>{person.name} wirklich löschen?</span>
+      <button onClick={onDelete}
+        style={{ background:"#e85a5a", border:"none", color:"#fff",
+          borderRadius:6, padding:"5px 12px", cursor:"pointer", fontWeight:700, fontSize:12 }}>
+        Ja, löschen
+      </button>
+      <button onClick={()=>setConfirm(false)}
+        style={{ background:"none", border:"none", color:"#888", cursor:"pointer", fontSize:18, lineHeight:1 }}>
+        ×
+      </button>
     </div>
   );
 }
