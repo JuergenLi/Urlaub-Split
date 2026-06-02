@@ -1986,8 +1986,16 @@ function AppWithSync() {
       .catch(() => setSyncStatus("fehler"));
   }
 
-  function setPersonen(p) { setPersonenState(p); doSave(p, reisenRef.current); }
-  function setReisen(r)   { setReisenState(r);   doSave(personenRef.current, r); }
+  const setPersonen = useCallback((p) => {
+    if (typeof p === 'function') p = p(personenRef.current);
+    setPersonenState(p);
+    doSave(p, reisenRef.current);
+  }, []);
+  const setReisen = useCallback((r) => {
+    if (typeof r === 'function') r = r(reisenRef.current);
+    setReisenState(r);
+    doSave(personenRef.current, r);
+  }, []);
 
   async function savePins(newPins) {
     setPinsState(newPins);
