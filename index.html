@@ -1947,7 +1947,15 @@ function AppWithSync() {
     doSave(personenRef.current, reisenRef.current, newPins);
   }
 
-  // Noch laden
+  // Keine PINs gesetzt → auto-login als Admin via useEffect
+  useEffect(() => {
+    if (syncStatus === "ok" && !authState) {
+      const hasPins = Object.keys(pins).length > 0;
+      if (!hasPins) setAuthState({ role:"admin", reiseId: null });
+    }
+  }, [syncStatus, pins, authState]);
+
+  // Noch laden oder warten auf Auth
   if (syncStatus === "laden") return null;
 
   // PIN-Screen: zeigen wenn nicht authentifiziert und PINs gesetzt sind
@@ -1955,11 +1963,8 @@ function AppWithSync() {
   if (!authState) {
     if (hasPins) {
       return <PinScreen reisen={reisen} pins={pins} onUnlock={(role, reiseId) => setAuthState({role, reiseId})} />;
-    } else {
-      // Keine PINs → direkt als Admin rein
-      setAuthState({ role:"admin", reiseId: null });
-      return null;
     }
+    return null; // Warte auf useEffect
   }
 
   // Gefilterte Reisen je nach Rolle
