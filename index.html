@@ -529,6 +529,7 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
   const [personModal,     setPersonModal]     = useState(null);
   const [einzahlungModal, setEinzahlungModal] = useState(null);
   const [shareModal,      setShareModal]      = useState(false);
+  const [reisePickerOpen, setReisePickerOpen] = useState(false);
 
   // Filter
   const [filterBezahler, setFilterBezahler] = useState("alle");
@@ -623,7 +624,6 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
   const totalEingezahlt = reise.einzahlungen.reduce((s,e)=>s+(parseFloat(e.betrag)||0),0);
 
   // ── STYLING ───────────────────────────────────────────────────────────────
-  const [reisePickerOpen, setReisePickerOpen] = useState(false);
 
   const MODUS_LABELS = { alle:"Alle", anwesende:"Tagesweise", gruppen:"Gruppen", personen:"Personen" };
   const MODUS_COLORS = { alle:"#888", anwesende:"#5A9BE8", gruppen:"#5AC8A0", personen:"#E8C05A" };
