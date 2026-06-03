@@ -566,7 +566,7 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
     if (ausgabeModal && ausgabeModal !== "new") {
       updReise(r=>({...r, ausgaben: r.ausgaben.map(a=>a.id===ausgabeModal.id ? {...f,id:a.id,betrag} : a)}));
     } else {
-      updReise(r=>({...r, ausgaben:[...r.ausgaben, {...f,betrag,id:uid()}]}));
+      updReise(r=>({...r, ausgaben:[...r.ausgaben, {...f,betrag,id:uid(),createdAt:Date.now()}]}));
     }
     setAusgabeModal(null);
   }
@@ -648,7 +648,12 @@ function App({ personen, setPersonen, reisen, setReisen, syncStatus, lastSaved, 
     if (filterBezahler!=="alle" && a.bezahlerId!==filterBezahler) return false;
     if (filterModus!=="alle" && a.verteilungsModus!==filterModus) return false;
     return true;
-  }).sort((a,b)=>b.datum.localeCompare(a.datum));
+  }).sort((a,b)=>{
+    const dateDiff = b.datum.localeCompare(a.datum);
+    if (dateDiff !== 0) return dateDiff;
+    // Innerhalb eines Tages: neueste Eingabe oben (createdAt absteigend)
+    return (b.createdAt||0) - (a.createdAt||0);
+  });
 
   const totalAusgaben = reise.ausgaben.reduce((s,a)=>s+(parseFloat(a.betrag)||0),0);
   const totalEingezahlt = reise.einzahlungen.reduce((s,e)=>s+(parseFloat(e.betrag)||0),0);
