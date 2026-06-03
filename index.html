@@ -1485,10 +1485,22 @@ function StatistikTab({ reise, alleReisen, bilanzen, gruppenBilanz, allPersonen,
   // ── Reisen-Vergleich ──────────────────────────────────────────────────────
   const reisenVergleich = alleReisen.map(r => {
     const rTotal = (r.ausgaben||[]).reduce((s,a)=>s+(parseFloat(a.betrag)||0),0);
-    // Anzahl eindeutiger Personen in dieser Reise
-    const rPersonen = [...new Set((r.gruppen||[]).flatMap(g=>g.mitglieder||[]))];
+    const rPersonen = [...new Set([
+      ...(r.gruppen||[]).flatMap(g=>g.mitglieder||[]),
+      ...(r.personenIds||[])
+    ])];
     const rN = Math.max(rPersonen.length, 1);
-    return { id:r.id, name:r.name, emoji:r.emoji||"✈️", total:rTotal, perPerson:rTotal/rN, n:rN, isAktiv:r.id===reise.id };
+    // Anzahl Tage
+    let rTage = 1;
+    if (r.startDatum && r.endDatum) {
+      const diff = new Date(r.endDatum+"T12:00:00") - new Date(r.startDatum+"T12:00:00");
+      rTage = Math.max(1, Math.round(diff / (1000*60*60*24)) + 1);
+    }
+    return {
+      id:r.id, name:r.name, emoji:r.emoji||"✈️",
+      total:rTotal, perPerson:rTotal/rN, perPersonTag:(rTotal/rN)/rTage,
+      n:rN, tage:rTage, isAktiv:r.id===reise.id
+    };
   }).sort((a,b)=>b.perPerson-a.perPerson);
 
   // ── Ausgaben pro Person (wer hat wie viel bezahlt) ────────────────────────
@@ -1595,6 +1607,7 @@ function StatistikTab({ reise, alleReisen, bilanzen, gruppenBilanz, allPersonen,
 
   const card = {background:"#1a1d2e",border:"1px solid #252840",borderRadius:14,padding:18,marginBottom:14};
   const maxReisenPP = Math.max(...reisenVergleich.map(r=>r.perPerson),1);
+  const maxReisenPPT = Math.max(...reisenVergleich.map(r=>r.perPersonTag),1);
 
   return (
     <div>
@@ -1632,13 +1645,22 @@ function StatistikTab({ reise, alleReisen, bilanzen, gruppenBilanz, allPersonen,
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:14,fontWeight:800,color:textColor}}>{fmt(r.perPerson)}</div>
-                    <div style={{fontSize:10,color:"#444"}}>Gesamt: {fmt(r.total)}</div>
+                    <div style={{fontSize:10,color:"#5AC8A0",fontWeight:600}}>{fmt(r.perPersonTag)}<span style={{color:"#444",fontWeight:400}}> /Tag</span></div>
+                    <div style={{fontSize:10,color:"#444"}}>{r.tage} Tage · {r.n} Pers. · {fmt(r.total)}</div>
                   </div>
                 </div>
-                <div style={{height:10,background:"#0e1020",borderRadius:5,overflow:"hidden"}}>
-                  <div style={{height:"100%",borderRadius:5,
+                <div style={{height:8,background:"#0e1020",borderRadius:4,overflow:"hidden",marginBottom:3}}>
+                  <div style={{height:"100%",borderRadius:4,
                     background:r.isAktiv?"linear-gradient(90deg,#4a7fd4,#7eb8f7)":barColor,
                     width:`${(r.perPerson/maxReisenPP)*100}%`}}/>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <div style={{height:5,background:"#0e1020",borderRadius:3,overflow:"hidden",flex:1}}>
+                    <div style={{height:"100%",borderRadius:3,
+                      background:r.isAktiv?"linear-gradient(90deg,#2a8a5a,#5AC8A0)":"#2a4a3a",
+                      width:`${(r.perPersonTag/maxReisenPPT)*100}%`}}/>
+                  </div>
+                  <span style={{fontSize:9,color:"#444",whiteSpace:"nowrap",flexShrink:0}}>pro Tag</span>
                 </div>
               </div>
             );
