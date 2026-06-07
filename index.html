@@ -87,6 +87,26 @@ try {
 <script type="text/babel">
 const { useState, useMemo, useCallback, useEffect, useRef } = React;
 
+// ── PIN-HASH (global verfügbar für alle Komponenten) ──────────────────────────
+async function hashPin(pin) {
+  try {
+    const msgBuffer = new TextEncoder().encode(pin + "urlaubsapp2026");
+    const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+  } catch(e) {
+    // Fallback für Browser ohne crypto.subtle
+    let hash = 0;
+    const str = pin + "urlaubsapp2026";
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0;
+    }
+    return Math.abs(hash).toString(16).padStart(16, "0");
+  }
+}
+const ADMIN_PIN_KEY = "__admin__";
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATENMODELL
 // ═══════════════════════════════════════════════════════════════════════════════
