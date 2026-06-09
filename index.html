@@ -1817,6 +1817,59 @@ function StatistikTab({ reise, alleReisen, bilanzen, gruppenBilanz, allPersonen,
 }
 
 
+
+// ─── EINZAHLUNGS-FORMULAR ────────────────────────────────────────────────────
+function EinzahlungForm({ person, reise, onSave }) {
+  const existing = (reise.einzahlungen||[]).filter(e=>e.personId===person.id);
+  const [einzahlungen, setEinzahlungen] = useState(
+    existing.length > 0
+      ? existing.map(e=>({ id:e.id||uid(), betrag:String(e.betrag), notiz:e.notiz||"", datum:e.datum||"" }))
+      : [{ id:uid(), betrag:"", notiz:"", datum:"" }]
+  );
+  function addZeile() { setEinzahlungen(p=>[...p,{id:uid(),betrag:"",notiz:"",datum:""}]); }
+  function removeZeile(id) { setEinzahlungen(p=>p.filter(e=>e.id!==id)); }
+  function updateZeile(id,key,val) { setEinzahlungen(p=>p.map(e=>e.id===id?{...e,[key]:val}:e)); }
+  const gesamt = einzahlungen.reduce((s,e)=>s+(parseFloat(e.betrag)||0),0);
+  const fmtL = n => new Intl.NumberFormat("de-DE",{style:"currency",currency:"EUR"}).format(n||0);
+  function handleSave() {
+    const valid = einzahlungen.filter(e=>parseFloat(e.betrag)>0);
+    if (!valid.length) return;
+    onSave(person.id, valid.map(e=>({id:e.id,betrag:parseFloat(e.betrag)||0,notiz:e.notiz,datum:e.datum})));
+  }
+  return (
+    <div>
+      <div style={{fontSize:12,color:"#555",marginBottom:14}}>Mehrere Teilzahlungen möglich</div>
+      {einzahlungen.map((e,i)=>(
+        <div key={e.id} style={{background:"#0e1020",border:"1px solid #2a2d42",borderRadius:10,padding:12,marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{fontSize:12,color:"#555",fontWeight:700}}>#{i+1}</span>
+            {einzahlungen.length>1 && <button onClick={()=>removeZeile(e.id)} style={{background:"none",border:"none",color:"#e85a5a",cursor:"pointer",fontSize:18}}>×</button>}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+            <div><label style={S.label}>Betrag (€)</label>
+              <input style={S.input} type="number" step="0.01" placeholder="0.00"
+                value={e.betrag} onChange={ev=>updateZeile(e.id,"betrag",ev.target.value)}/></div>
+            <div><label style={S.label}>Datum</label>
+              <input style={S.input} type="date"
+                value={e.datum} onChange={ev=>updateZeile(e.id,"datum",ev.target.value)}/></div>
+          </div>
+          <div><label style={S.label}>Notiz</label>
+            <input style={S.input} placeholder="z.B. Banküberweisung"
+              value={e.notiz} onChange={ev=>updateZeile(e.id,"notiz",ev.target.value)}/></div>
+        </div>
+      ))}
+      <button onClick={addZeile} style={{...S.btn("#a0e4c8"),width:"100%",marginBottom:16,textAlign:"center"}}>
+        + Weitere Einzahlung
+      </button>
+      <div style={{display:"flex",justifyContent:"space-between",background:"#1a1d2e",borderRadius:10,padding:"10px 14px",marginBottom:16}}>
+        <span style={{fontSize:13,color:"#888"}}>Gesamt</span>
+        <span style={{fontSize:18,fontWeight:800,color:"#7eb8f7"}}>{fmtL(gesamt)}</span>
+      </div>
+      <button style={S.btnPrimary} onClick={handleSave}>Speichern</button>
+    </div>
+  );
+}
+
 function ReiseEditModal({ reise, onSave, onDelete, onClose, pins, onSavePin, onClearPin }) {
   const EMOJIS = ["✈️","🏖","🏔","🎿","🚢","🏕","🌍","🎭","🍝","🏛","🎪","🚗","🛳","🌴","🎉"];
   const [form, setForm] = useState({
@@ -2139,6 +2192,7 @@ function AppWithSync() {
   const [syncStatus, setSyncStatus]    = useState("laden");
   const [lastSaved,  setLastSaved]     = useState(null);
   const [pins,       setPinsState]     = useState({});
+  const [pinsLoaded,  setPinsLoaded]    = useState(false);
   const [authState,  setAuthState]     = useState(null); // null=loading, {role,reiseId}=ok
   const [showPinMgr, setShowPinMgr]   = useState(false);
   const localVersion = useRef(0);
@@ -2155,6 +2209,7 @@ function AppWithSync() {
             .then(() => { setSyncStatus("ok"); setLastSaved(new Date()); })
             .catch(() => setSyncStatus("fehler"));
           isFirstLoad.current = false;
+          setPinsLoaded(true);
           document.getElementById('loading').style.display = 'none';
           setAuthState({ role:"admin", reiseId: null });
           return;
@@ -2175,6 +2230,7 @@ function AppWithSync() {
           setPersonenState(p);
           setReisenState(r);
           setPinsState(data.pins || {});
+          setPinsLoaded(true);
           localVersion.current = incoming;
           setLastSaved(new Date());
           setSyncStatus("ok");
@@ -2215,12 +2271,13 @@ function AppWithSync() {
   }
 
   // Keine PINs gesetzt → auto-login als Admin via useEffect
+  // pinsLoaded stellt sicher dass wir warten bis Firebase geantwortet hat
   useEffect(() => {
-    if (syncStatus === "ok" && !authState) {
+    if (syncStatus === "ok" && !authState && pinsLoaded) {
       const hasPins = Object.keys(pins).length > 0;
       if (!hasPins) setAuthState({ role:"admin", reiseId: null });
     }
-  }, [syncStatus, pins, authState]);
+  }, [syncStatus, pins, authState, pinsLoaded]);
 
   // Noch laden oder warten auf Auth
   if (syncStatus === "laden") return null;
