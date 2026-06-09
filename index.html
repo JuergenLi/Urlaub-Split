@@ -2229,8 +2229,14 @@ function AppWithSync() {
           reisenRef.current   = r;
           setPersonenState(p);
           setReisenState(r);
-          setPinsState(data.pins || {});
+          const loadedPins = data.pins || {};
+          setPinsState(loadedPins);
           setPinsLoaded(true);
+          // Direkt hier prüfen ob PIN-Screen nötig ist
+          if (!authState) {
+            const hasPins = Object.keys(loadedPins).length > 0;
+            if (!hasPins) setAuthState({ role:"admin", reiseId: null });
+          }
           localVersion.current = incoming;
           setLastSaved(new Date());
           setSyncStatus("ok");
@@ -2271,16 +2277,17 @@ function AppWithSync() {
   }
 
   // Keine PINs gesetzt → auto-login als Admin via useEffect
-  // pinsLoaded stellt sicher dass wir warten bis Firebase geantwortet hat
+  // Wir prüfen direkt im Firebase-Callback (siehe fbSubscribe unten)
+  // Dieser useEffect ist nur als Fallback
   useEffect(() => {
     if (syncStatus === "ok" && !authState && pinsLoaded) {
       const hasPins = Object.keys(pins).length > 0;
       if (!hasPins) setAuthState({ role:"admin", reiseId: null });
     }
-  }, [syncStatus, pins, authState, pinsLoaded]);
+  }, [syncStatus, pinsLoaded]); // Nur wenn pinsLoaded sich ändert
 
-  // Noch laden oder warten auf Auth
-  if (syncStatus === "laden") return null;
+  // Noch laden oder warten bis Pins geladen sind
+  if (syncStatus === "laden" || !pinsLoaded) return null;
 
   // PIN-Screen: zeigen wenn nicht authentifiziert und PINs gesetzt sind
   const hasPins = Object.keys(pins).length > 0;
@@ -2288,7 +2295,8 @@ function AppWithSync() {
     if (hasPins) {
       return <PinScreen reisen={reisen} pins={pins} onUnlock={(role, reiseId) => setAuthState({role, reiseId})} />;
     }
-    return null; // Warte auf useEffect
+    // Keine PINs → warte auf useEffect/Firebase-Callback für auto-login
+    return null;
   }
 
   // Gefilterte Reisen je nach Rolle
