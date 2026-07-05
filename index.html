@@ -2231,12 +2231,23 @@ function AppWithSync() {
           setPersonenState(p);
           setReisenState(r);
           const loadedPins = data.pins || {};
+          console.log("Firebase pins geladen:", JSON.stringify(loadedPins));
+          console.log("data.pins raw:", data.pins);
           setPinsState(loadedPins);
           setPinsLoaded(true);
           // Direkt hier prüfen ob PIN-Screen nötig ist
+          // Nur auto-login wenn pins definitiv nie gesetzt wurden
+          // (data.pins === null/undefined = nie gesetzt, data.pins === {} = bewusst leer)
           if (!authState) {
+            const pinsNieGesetzt = data.pins === null || data.pins === undefined;
             const hasPins = Object.keys(loadedPins).length > 0;
-            if (!hasPins) setAuthState({ role:"admin", reiseId: null });
+            if (!hasPins && pinsNieGesetzt) {
+              setAuthState({ role:"admin", reiseId: null });
+            } else if (!hasPins && !pinsNieGesetzt) {
+              // pins={} in Firebase → PINs wurden gelöscht → auch auto-login
+              setAuthState({ role:"admin", reiseId: null });
+            }
+            // hasPins=true → PinScreen wird gerendert
           }
           localVersion.current = incoming;
           setLastSaved(new Date());
@@ -2277,15 +2288,7 @@ function AppWithSync() {
     doSave(personenRef.current, reisenRef.current, newPins);
   }
 
-  // Keine PINs gesetzt → auto-login als Admin via useEffect
-  // Wir prüfen direkt im Firebase-Callback (siehe fbSubscribe unten)
-  // Dieser useEffect ist nur als Fallback
-  useEffect(() => {
-    if (syncStatus === "ok" && !authState && pinsLoaded) {
-      const hasPins = Object.keys(pins).length > 0;
-      if (!hasPins) setAuthState({ role:"admin", reiseId: null });
-    }
-  }, [syncStatus, pinsLoaded]); // Nur wenn pinsLoaded sich ändert
+  // Auth wird direkt im Firebase-Callback gesetzt (kein useEffect nötig)
 
   // Noch laden oder warten bis Pins geladen sind
   if (syncStatus === "laden" || !pinsLoaded) return null;
